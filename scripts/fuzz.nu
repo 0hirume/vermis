@@ -1,55 +1,88 @@
-let vswhere_path = ($env.'ProgramFiles(x86)' | path join 'Microsoft Visual Studio' Installer vswhere.exe)
-
-if not ($vswhere_path | path exists) {
-    error make {
-        msg: 'Visual Studio Installer discovery tool was not found.'
-        labels: [
-            {text: 'Missing executable', span: (metadata $vswhere_path).span}
-        ]
+def --wrapped main [
+    target: string = "lexer" # Fuzz target to run.
+    ...fuzz_args: string # Arguments to pass to libFuzzer.
+]: nothing -> nothing {
+    let root_path = pwd | path expand
+    let oracle_name = if $nu.os-info.name == windows {
+        'vermis-luau-oracle.exe'
+    } else {
+        'vermis-luau-oracle'
     }
-}
+    let default_oracle_path = $root_path | path join target oracle bin $oracle_name
+    let vswhere_path = (
+        $env
+        | get 'ProgramFiles(x86)'
+        | path join 'Microsoft Visual Studio' Installer vswhere.exe
+    )
 
-let discovery_result = (^$vswhere_path -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | complete)
-
-if $discovery_result.exit_code != 0 {
-    print --stderr $discovery_result.stderr
-    exit $discovery_result.exit_code
-}
-
-let installation_path = ($discovery_result.stdout | str trim)
-
-if ($installation_path | is-empty) {
-    error make {
-        msg: 'No Visual Studio installation with MSVC C++ tools was found.'
-        labels: [
-            {text: 'Empty discovery result', span: (metadata $installation_path).span}
-        ]
+    if not ($vswhere_path | path exists) {
+        error make {
+            msg: 'Visual Studio Installer discovery tool was not found.'
+            labels: [
+                {
+                    text: 'Missing executable'
+                    span: (metadata $vswhere_path).span
+                }
+            ]
+        }
     }
-}
 
-let developer_script_path = ($installation_path | path join Common7 Tools VsDevCmd.bat)
+    let discovery_result = (
+        ^$vswhere_path -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+        | complete
+    )
 
-if not ($developer_script_path | path exists) {
-    error make {
-        msg: 'The selected Visual Studio installation has no VsDevCmd.bat.'
-        labels: [
-            {text: 'Missing script', span: (metadata $developer_script_path).span}
-        ]
+    if $discovery_result.exit_code != 0 {
+        print --stderr $discovery_result.stderr
+        exit $discovery_result.exit_code
     }
-}
 
-with-env {VERMIS_VSDEVCMD: $developer_script_path} {
+    let installation_path = $discovery_result.stdout | str trim
+
+    if ($installation_path | is-empty) {
+        error make {
+            msg: 'No Visual Studio installation with MSVC C++ tools was found.'
+            labels: [
+                {
+                    text: 'Empty discovery result'
+                    span: (metadata $installation_path).span
+                }
+            ]
+        }
+    }
+
+    let developer_script_path = $installation_path | path join Common7 Tools VsDevCmd.bat
+
+    if not ($developer_script_path | path exists) {
+        error make {
+            msg: 'The selected Visual Studio installation has no VsDevCmd.bat.'
+            labels: [
+                {
+                    text: 'Missing script'
+                    span: (metadata $developer_script_path).span
+                }
+            ]
+        }
+    }
+
+    let oracle_path = $env.VERMIS_ORACLE? | default $default_oracle_path
+    let fuzz_suffix = if ($fuzz_args | is-empty) {
+        ''
+    } else {
+        $" -- ($fuzz_args | str join ' ')"
+    }
+    let fuzz_command = $"cargo fuzz run ($target)($fuzz_suffix)"
     let commands = ([
-        'call "%VERMIS_VSDEVCMD%" -arch=x64 && cargo fuzz run lexer'
+        $'call "($developer_script_path)" -arch=x64'
+        $'set "VERMIS_ORACLE=($oracle_path)"'
+        $fuzz_command
         'exit /b %errorlevel%'
         ''
     ] | str join (char crlf))
 
     try {
         $commands | ^$env.ComSpec /d
-    } catch {|error|
-        exit $error.exit_code
-    }
+    } catch {|error| exit $error.exit_code }
 
     exit 0
 }

@@ -8,9 +8,4 @@ rust = { version = "nightly", profile = "minimal", components = ["rust-analyzer"
 run = "nu scripts/fuzz.nu"
 
 [tasks.differential]
-env = { VERMIS_DIFFERENTIAL_MODE = "test" }
-run = "nu scripts/differential.nu"
-
-[tasks.fuzz-differential]
-env = { VERMIS_DIFFERENTIAL_MODE = "fuzz" }
 run = "nu scripts/differential.nu"
