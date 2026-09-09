@@ -1,6 +1,16 @@
 [tools]
+"aqua:Kitware/CMake" = "latest"
 "aqua:tombi-toml/tombi" = "latest"
+"github:llvm/llvm-project" = "latest"
 rust = { version = "nightly", profile = "minimal", components = ["rust-analyzer", "rustfmt", "clippy"] }
 
 [tasks.fuzz]
 run = "nu scripts/fuzz.nu"
+
+[tasks.differential]
+env = { VERMIS_DIFFERENTIAL_MODE = "test" }
+run = "nu scripts/differential.nu"
+
+[tasks.fuzz-differential]
+env = { VERMIS_DIFFERENTIAL_MODE = "fuzz" }
+run = "nu scripts/differential.nu"

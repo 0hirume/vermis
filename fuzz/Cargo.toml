@@ -18,3 +18,10 @@ path = "lexer.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "differential"
+path = "differential.rs"
+test = false
+doc = false
+bench = false

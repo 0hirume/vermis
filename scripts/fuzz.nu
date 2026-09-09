@@ -39,11 +39,17 @@ if not ($developer_script_path | path exists) {
 }
 
 with-env {VERMIS_VSDEVCMD: $developer_script_path} {
-    [
+    let commands = ([
         'call "%VERMIS_VSDEVCMD%" -arch=x64 && cargo fuzz run lexer'
         'exit /b %errorlevel%'
         ''
-    ] | str join (char crlf) |
+    ] | str join (char crlf))
 
-    exit (^$env.ComSpec /d | complete).exit_code
+    try {
+        $commands | ^$env.ComSpec /d
+    } catch {|error|
+        exit $error.exit_code
+    }
+
+    exit 0
 }
