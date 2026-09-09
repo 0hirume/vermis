@@ -29,6 +29,32 @@ pub struct OracleToken {
     pub payload: u32,
 }
 
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParseMode {
+    Chunk = 1,
+    Expression = 2,
+    Type = 3,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParseEvent {
+    pub tag: u8,
+    pub flags: u8,
+    pub start: usize,
+    pub end: usize,
+    pub value: u32,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParseOutput {
+    pub accepted: bool,
+    pub errors: Vec<(usize, usize)>,
+    pub events: Vec<ParseEvent>,
+}
+
 pub struct Oracle {
     child: Child,
     input: ChildStdin,
@@ -60,9 +86,7 @@ impl Oracle {
     }
 
     pub fn lex(&mut self, source: &[u8]) -> io::Result<Vec<OracleToken>> {
-        self.input.write_all(&(source.len() as u64).to_le_bytes())?;
-        self.input.write_all(source)?;
-        self.input.flush()?;
+        self.request(0, source)?;
 
         let count = self.read_u32()? as usize;
         let mut tokens = Vec::with_capacity(count);
@@ -82,13 +106,66 @@ impl Oracle {
             tokens.push(OracleToken {
                 kind: header[0],
                 value: header[1],
-                start: u64::from_le_bytes(start) as usize,
-                end: u64::from_le_bytes(end) as usize,
+                start: usize::try_from(u64::from_le_bytes(start))
+                    .expect("oracle offset fits usize"),
+                end: usize::try_from(u64::from_le_bytes(end)).expect("oracle offset fits usize"),
                 payload: u32::from_le_bytes(payload),
             });
         }
 
         Ok(tokens)
+    }
+
+    #[allow(dead_code)]
+    pub fn parse(&mut self, mode: ParseMode, source: &[u8]) -> io::Result<ParseOutput> {
+        self.request(mode as u8, source)?;
+
+        let mut accepted = [0; 1];
+        self.output.read_exact(&mut accepted)?;
+        let error_count = self.read_u32()? as usize;
+        let mut errors = Vec::with_capacity(error_count);
+        for _ in 0..error_count {
+            let start = usize::try_from(self.read_u64()?).expect("oracle offset fits usize");
+            let end = usize::try_from(self.read_u64()?).expect("oracle offset fits usize");
+            errors.push((start, end));
+        }
+
+        let event_count = self.read_u32()? as usize;
+        let mut events = Vec::with_capacity(event_count);
+        for _ in 0..event_count {
+            let mut header = [0; 4];
+            self.output.read_exact(&mut header)?;
+            let start = usize::try_from(self.read_u64()?).expect("oracle offset fits usize");
+            let end = usize::try_from(self.read_u64()?).expect("oracle offset fits usize");
+            let value = self.read_u32()?;
+            events.push(ParseEvent {
+                tag: header[0],
+                flags: header[1],
+                start,
+                end,
+                value,
+            });
+        }
+
+        Ok(ParseOutput {
+            accepted: accepted[0] != 0,
+            errors,
+            events,
+        })
+    }
+
+    fn request(&mut self, mode: u8, source: &[u8]) -> io::Result<()> {
+        self.input.write_all(&[mode])?;
+        self.input.write_all(&(source.len() as u64).to_le_bytes())?;
+        self.input.write_all(source)?;
+        self.input.flush()
+    }
+
+    #[allow(dead_code)]
+    fn read_u64(&mut self) -> io::Result<u64> {
+        let mut bytes = [0; 8];
+        self.output.read_exact(&mut bytes)?;
+        Ok(u64::from_le_bytes(bytes))
     }
 
     fn read_u32(&mut self) -> io::Result<u32> {

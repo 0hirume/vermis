@@ -25,3 +25,10 @@ path = "differential.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "conformance"
+path = "conformance.rs"
+test = false
+doc = false
+bench = false

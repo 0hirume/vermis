@@ -15,12 +15,16 @@ pub struct Block {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Attribute {
     pub span: Span,
+    pub name: Option<Span>,
+    pub arguments: Vec<Expression>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Binding {
     pub span: Span,
     pub name: Span,
+    pub annotation: Option<TypeExpression>,
+    pub is_const: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,15 +37,25 @@ pub struct FunctionName {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Function {
     pub span: Span,
+    pub attributes: Vec<Attribute>,
+    pub generics: Vec<GenericParameter>,
     pub parameters: Vec<Binding>,
     pub variadic: bool,
+    pub variadic_type: Option<TypePack>,
+    pub return_types: Option<TypePack>,
     pub body: Block,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IfBranch {
-    pub condition: Expression,
+    pub condition: IfCondition,
     pub body: Block,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IfCondition {
+    Expression(Expression),
+    Local { binding: Binding, value: Expression },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,6 +69,7 @@ pub enum Statement {
         attributes: Vec<Attribute>,
         bindings: Vec<Binding>,
         values: Vec<Expression>,
+        is_const: bool,
     },
     LocalFunction {
         span: Span,
@@ -70,9 +85,9 @@ pub enum Statement {
     },
     CompoundAssignment {
         span: Span,
-        target: Expression,
+        target: Box<Expression>,
         operator: Operator,
-        value: Expression,
+        value: Box<Expression>,
     },
     Call {
         span: Span,
@@ -111,9 +126,9 @@ pub enum Statement {
     NumericFor {
         span: Span,
         binding: Binding,
-        from: Expression,
-        to: Expression,
-        step: Option<Expression>,
+        from: Box<Expression>,
+        to: Box<Expression>,
+        step: Option<Box<Expression>>,
         body: Block,
     },
     GenericFor {
@@ -129,6 +144,64 @@ pub enum Statement {
         name: FunctionName,
         function: Function,
     },
+
+    TypeAlias {
+        span: Span,
+        exported: bool,
+        name: Span,
+        generics: Vec<GenericParameter>,
+        value: TypeExpression,
+    },
+    TypeFunction {
+        span: Span,
+        exported: bool,
+        name: Span,
+        function: Function,
+    },
+    DeclareGlobal {
+        span: Span,
+        name: Span,
+        annotation: TypeExpression,
+    },
+    DeclareFunction {
+        span: Span,
+        name: Span,
+        signature: FunctionSignature,
+    },
+    Class {
+        span: Span,
+        exported: bool,
+        open: bool,
+        name: Span,
+        superclass: Option<TypeExpression>,
+        members: Vec<ClassMember>,
+    },
+    Export {
+        span: Span,
+        statement: Box<Statement>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FunctionSignature {
+    pub span: Span,
+    pub generics: Vec<GenericParameter>,
+    pub parameters: Vec<TypeParameter>,
+    pub variadic: Option<TypeExpression>,
+    pub returns: TypePack,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClassMember {
+    pub span: Span,
+    pub name: Span,
+    pub kind: ClassMemberKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClassMemberKind {
+    Property { annotation: Option<TypeExpression> },
+    Method { function: Function },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -157,12 +230,23 @@ pub enum ExpressionKind {
         right: Box<Expression>,
     },
     Group(Box<Expression>),
+    IfElse {
+        condition: Box<Expression>,
+        then_expression: Box<Expression>,
+        else_expression: Box<Expression>,
+    },
+    TypeAssertion {
+        expression: Box<Expression>,
+        annotation: TypeExpression,
+    },
 
     Function(Function),
     Table(Vec<TableField>),
     Call {
         function: Box<Expression>,
         method: Option<Span>,
+        type_arguments: Vec<TypeArgument>,
+        type_arguments_span: Option<Span>,
         arguments: Vec<Expression>,
     },
     Index {
@@ -184,8 +268,92 @@ pub struct TableField {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TableKey {
-    Expression(Expression),
+    Expression(Box<Expression>),
     Name(Span),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GenericParameter {
+    pub span: Span,
+    pub name: Span,
+    pub is_pack: bool,
+    pub default: Option<TypeExpression>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypeParameter {
+    pub span: Span,
+    pub name: Option<Span>,
+    pub annotation: TypeExpression,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TypeArgument {
+    Type(TypeExpression),
+    Pack(TypePack),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypeExpression {
+    pub span: Span,
+    pub kind: TypeExpressionKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TypeExpressionKind {
+    Name {
+        path: Vec<Span>,
+        arguments: Vec<TypeArgument>,
+    },
+    Nil,
+    Boolean(bool),
+    String,
+    Number,
+    Table {
+        fields: Vec<TypeField>,
+        indexer: Option<Box<TypeIndexer>>,
+    },
+    Function {
+        generics: Vec<GenericParameter>,
+        parameters: Vec<TypeParameter>,
+        variadic: Option<Box<TypeExpression>>,
+        returns: TypePack,
+    },
+    Typeof(Box<Expression>),
+    Optional(Box<TypeExpression>),
+    Union(Vec<TypeExpression>),
+    Intersection(Vec<TypeExpression>),
+    Group(Box<TypeExpression>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypeField {
+    pub span: Span,
+    pub name: Option<Span>,
+    pub key: Option<TypeExpression>,
+    pub annotation: TypeExpression,
+    pub optional: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypeIndexer {
+    pub span: Span,
+    pub index: TypeExpression,
+    pub result: TypeExpression,
+    pub implicit: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypePack {
+    pub span: Span,
+    pub types: Vec<TypeExpression>,
+    pub tail: Option<TypePackTail>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TypePackTail {
+    Variadic(Box<TypeExpression>),
+    Generic(Span),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
