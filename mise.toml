@@ -1,3 +1,6 @@
 [tools]
 "aqua:tombi-toml/tombi" = "latest"
 rust = { version = "nightly", profile = "minimal", components = ["rust-analyzer", "rustfmt", "clippy"] }
+
+[tasks.fuzz]
+run = "nu scripts/fuzz.nu"
