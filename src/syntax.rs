@@ -119,7 +119,7 @@ pub enum InterpolatedKind {
 pub enum LexError {
     BrokenString,
     BrokenComment,
-    BrokenUnicode,
+    BrokenUnicode { codepoint: u32 },
     BrokenInterpolatedDoubleBrace,
 }
 
@@ -149,6 +149,18 @@ pub struct Token {
 }
 
 impl Token {
+    #[must_use]
+    pub fn diagnostic_span(self) -> Span {
+        if self.kind == TokenKind::Error(LexError::BrokenInterpolatedDoubleBrace) {
+            Span {
+                start: self.span.start,
+                end: self.span.end - 2,
+            }
+        } else {
+            self.span
+        }
+    }
+
     #[must_use]
     pub fn bytes(self, source: &BStr) -> &BStr {
         self.span.bytes(source)

@@ -33,6 +33,14 @@ fn classifies_reserved_keywords() {
 
     for (name, keyword) in cases {
         assert_eq!(first(name), TokenKind::Keyword(keyword));
+        assert_eq!(first(&name.to_ascii_uppercase()), TokenKind::Name);
+
+        for suffix in *b"x_0" {
+            let mut extended = name.to_vec();
+            extended.push(suffix);
+
+            assert_eq!(first(&extended), TokenKind::Name);
+        }
     }
 }
 

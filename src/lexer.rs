@@ -454,32 +454,36 @@ impl<'source> Lexer<'source> {
     fn broken_unicode(&mut self) -> TokenKind {
         let first = self.current().expect("unicode error starts before eof");
 
-        let size = if first & 0b1110_0000 == 0b1100_0000 {
-            2
+        let (size, prefix) = if first & 0b1110_0000 == 0b1100_0000 {
+            (2, first & 0b0001_1111)
         } else if first & 0b1111_0000 == 0b1110_0000 {
-            3
+            (3, first & 0b0000_1111)
         } else if first & 0b1111_1000 == 0b1111_0000 {
-            4
+            (4, first & 0b0000_0111)
         } else {
             self.advance();
-            return TokenKind::Error(LexError::BrokenUnicode);
+            return TokenKind::Error(LexError::BrokenUnicode { codepoint: 0 });
         };
+
+        let mut codepoint = u32::from(prefix);
 
         self.advance();
 
         for _ in 1..size {
             let Some(byte) = self.current() else {
-                return TokenKind::Error(LexError::BrokenUnicode);
+                return TokenKind::Error(LexError::BrokenUnicode { codepoint: 0 });
             };
 
             if byte & 0b1100_0000 != 0b1000_0000 {
-                return TokenKind::Error(LexError::BrokenUnicode);
+                return TokenKind::Error(LexError::BrokenUnicode { codepoint: 0 });
             }
+
+            codepoint = (codepoint << 6) | u32::from(byte & 0b0011_1111);
 
             self.advance();
         }
 
-        TokenKind::Error(LexError::BrokenUnicode)
+        TokenKind::Error(LexError::BrokenUnicode { codepoint })
     }
 }
 

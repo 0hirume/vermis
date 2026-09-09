@@ -106,11 +106,11 @@ fn handles_unicode_without_requiring_utf8() {
     assert_eq!(
         syntax(source),
         [
-            TokenKind::Error(LexError::BrokenUnicode),
-            TokenKind::Error(LexError::BrokenUnicode),
-            TokenKind::Error(LexError::BrokenUnicode),
+            TokenKind::Error(LexError::BrokenUnicode { codepoint: 0 }),
+            TokenKind::Error(LexError::BrokenUnicode { codepoint: 0 }),
+            TokenKind::Error(LexError::BrokenUnicode { codepoint: 0 }),
             TokenKind::Byte(b'!'),
-            TokenKind::Error(LexError::BrokenUnicode),
+            TokenKind::Error(LexError::BrokenUnicode { codepoint: 0x2603 }),
             TokenKind::QuotedString,
         ]
     );
@@ -134,6 +134,255 @@ fn scans_names_and_number_like_sequences() {
             TokenKind::Number,
         ]
     );
+}
+
+fn check(source: &[u8], expected: &[(TokenKind, &[u8])]) {
+    let source = BStr::new(source);
+    let mut lexer = vermis::Lexer::new(source);
+    let mut offset = 0;
+
+    for &(kind, bytes) in expected {
+        let token = lexer.next().expect("expected token");
+
+        assert_eq!(token.kind, kind);
+        assert_eq!(token.span.start, offset);
+        assert_eq!(token.span.end, offset + bytes.len());
+        assert_eq!(token.bytes(source).as_bytes(), bytes);
+
+        offset = token.span.end;
+    }
+
+    let eof = lexer.next().expect("expected eof");
+
+    assert_eq!(offset, source.len());
+    assert_eq!(eof.kind, TokenKind::Eof);
+    assert_eq!(eof.span.start, offset);
+    assert_eq!(eof.span.end, offset);
+    assert_eq!(lexer.next(), None);
+    assert_eq!(lexer.next(), None);
+}
+
+#[test]
+fn empty_and_whitespace() {
+    check(b"", &[]);
+    check(
+        b" \t\r\n\x0b\x0c",
+        &[(TokenKind::Whitespace, b" \t\r\n\x0b\x0c")],
+    );
+}
+
+#[test]
+fn malformed_delimiters() {
+    check(
+        b"[=x",
+        &[
+            (TokenKind::Error(LexError::BrokenString), b"[="),
+            (TokenKind::Name, b"x"),
+        ],
+    );
+
+    check(b"--[=x", &[(TokenKind::Comment, b"--[=x")]);
+    check(
+        b"--[[",
+        &[(TokenKind::Error(LexError::BrokenComment), b"--[[")],
+    );
+    check(
+        b"[=[x]]",
+        &[(TokenKind::Error(LexError::BrokenString), b"[=[x]]")],
+    );
+    check(b"[=[x]]=]", &[(TokenKind::RawString, b"[=[x]]=]")]);
+    check(
+        b"[x]",
+        &[
+            (TokenKind::Byte(b'['), b"["),
+            (TokenKind::Name, b"x"),
+            (TokenKind::Byte(b']'), b"]"),
+        ],
+    );
+}
+
+#[test]
+fn escapes_and_unfinished_strings() {
+    for source in [
+        b"'\\z \t\r\n\x0b\x0cx'".as_slice(),
+        b"'\\\r\nx'",
+        b"'\\\nx'",
+        b"'\\xQQ'",
+        b"'\\u{no}'",
+        b"'\\999'",
+        b"'\\\"'",
+        b"'\\\''",
+    ] {
+        check(source, &[(TokenKind::QuotedString, source)]);
+    }
+
+    for source in [b"'".as_slice(), b"'x\\", b"`x", b"[[x"] {
+        check(
+            source,
+            &[(TokenKind::Error(LexError::BrokenString), source)],
+        );
+    }
+
+    check(
+        b"'x\ny",
+        &[
+            (TokenKind::Error(LexError::BrokenString), b"'x"),
+            (TokenKind::Whitespace, b"\n"),
+            (TokenKind::Name, b"y"),
+        ],
+    );
+}
+
+#[test]
+fn interpolation_modes() {
+    use InterpolatedKind::{Begin, End, Middle, Simple};
+    use TokenKind::{Byte, Interpolated, Name};
+
+    check(
+        b"`{a}{b}`",
+        &[
+            (Interpolated(Begin), b"`{"),
+            (Name, b"a"),
+            (Interpolated(Middle), b"}{"),
+            (Name, b"b"),
+            (Interpolated(End), b"}`"),
+        ],
+    );
+
+    check(
+        b"`{ {x} }`",
+        &[
+            (Interpolated(Begin), b"`{"),
+            (TokenKind::Whitespace, b" "),
+            (Byte(b'{'), b"{"),
+            (Name, b"x"),
+            (Byte(b'}'), b"}"),
+            (TokenKind::Whitespace, b" "),
+            (Interpolated(End), b"}`"),
+        ],
+    );
+
+    check(
+        b"`{`{x}`}`",
+        &[
+            (Interpolated(Begin), b"`{"),
+            (Interpolated(Begin), b"`{"),
+            (Name, b"x"),
+            (Interpolated(End), b"}`"),
+            (Interpolated(End), b"}`"),
+        ],
+    );
+
+    check(
+        b"`\\u{2603}\\{x`",
+        &[(Interpolated(Simple), b"`\\u{2603}\\{x`")],
+    );
+}
+
+#[test]
+fn broken_braces_have_separate_diagnostic_span() {
+    let source = BStr::new(b"`{{x}`");
+    let token = tokenize(source)[0];
+
+    assert_eq!(
+        token.kind,
+        TokenKind::Error(LexError::BrokenInterpolatedDoubleBrace)
+    );
+    assert_eq!(token.bytes(source), BStr::new(b"`{{"));
+    assert_eq!(token.diagnostic_span().bytes(source), BStr::new(b"`"));
+}
+
+#[test]
+fn attributes() {
+    check(
+        b"@native@[x]@1",
+        &[
+            (TokenKind::Attribute, b"@native"),
+            (TokenKind::AttributeOpen, b"@["),
+            (TokenKind::Name, b"x"),
+            (TokenKind::Byte(b']'), b"]"),
+            (TokenKind::Attribute, b"@"),
+            (TokenKind::Number, b"1"),
+        ],
+    );
+}
+
+#[test]
+fn upstream_unicode_decoding_is_not_scalar_validation() {
+    for (source, codepoint) in [
+        (b"\xc0\x80".as_slice(), 0),
+        (b"\xc1\xbf".as_slice(), 0x7f),
+        (b"\xed\xa0\x80".as_slice(), 0xd800),
+        (b"\xf4\x90\x80\x80".as_slice(), 0x0011_0000),
+        (b"\xf7\xbf\xbf\xbf".as_slice(), 0x001f_ffff),
+        (b"\xf0\x9f\x98\x80".as_slice(), 0x1f600),
+        (b"\xe2\x98".as_slice(), 0),
+    ] {
+        check(
+            source,
+            &[(
+                TokenKind::Error(LexError::BrokenUnicode { codepoint }),
+                source,
+            )],
+        );
+    }
+}
+
+#[test]
+fn nul_ends_lexical_bodies_but_is_preserved() {
+    for (prefix, kind) in [
+        (b"'x".as_slice(), TokenKind::Error(LexError::BrokenString)),
+        (b"[[x".as_slice(), TokenKind::Error(LexError::BrokenString)),
+        (b"`x".as_slice(), TokenKind::Error(LexError::BrokenString)),
+        (b"--x".as_slice(), TokenKind::Comment),
+        (
+            b"--[[x".as_slice(),
+            TokenKind::Error(LexError::BrokenComment),
+        ),
+    ] {
+        let mut source = prefix.to_vec();
+        source.extend_from_slice(b"\0tail");
+
+        check(
+            &source,
+            &[
+                (kind, prefix),
+                (TokenKind::Byte(0), b"\0"),
+                (TokenKind::Name, b"tail"),
+            ],
+        );
+    }
+}
+
+#[test]
+fn every_byte_pair_terminates_and_round_trips() {
+    for first in u8::MIN..=u8::MAX {
+        for second in u8::MIN..=u8::MAX {
+            let bytes = [first, second];
+            let source = BStr::new(&bytes);
+            let mut lexer = vermis::Lexer::new(source);
+            let mut end = 0;
+
+            for _ in 0..=source.len() {
+                let token = lexer.next().expect("eof must be emitted");
+
+                assert_eq!(token.span.start, end);
+                assert!(token.span.end <= source.len());
+
+                if token.kind == TokenKind::Eof {
+                    assert_eq!(end, source.len());
+                    assert!(token.span.is_empty());
+                    assert_eq!(lexer.next(), None);
+                    break;
+                }
+
+                assert!(!token.span.is_empty());
+                end = token.span.end;
+            }
+
+            assert_eq!(lexer.next(), None);
+        }
+    }
 }
 
 #[test]
