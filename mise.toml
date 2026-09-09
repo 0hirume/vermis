@@ -6,6 +6,3 @@ rust = { version = "nightly", profile = "minimal", components = ["rust-analyzer"
 
 [tasks.fuzz]
 run = "nu scripts/fuzz.nu"
-
-[tasks.differential]
-run = "nu scripts/differential.nu"

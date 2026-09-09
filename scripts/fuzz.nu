@@ -1,88 +1,36 @@
 def --wrapped main [
-    target: string = "lexer" # Fuzz target to run.
-    ...fuzz_args: string # Arguments to pass to libFuzzer.
+    target: string # Fuzz target to execute.
+    ...arguments: string # Arguments forwarded to libFuzzer.
 ]: nothing -> nothing {
-    let root_path = pwd | path expand
-    let oracle_name = if $nu.os-info.name == windows {
-        'vermis-luau-oracle.exe'
-    } else {
-        'vermis-luau-oracle'
-    }
-    let default_oracle_path = $root_path | path join target oracle bin $oracle_name
-    let vswhere_path = (
+    let discovery = (
         $env
         | get 'ProgramFiles(x86)'
         | path join 'Microsoft Visual Studio' Installer vswhere.exe
     )
-
-    if not ($vswhere_path | path exists) {
-        error make {
-            msg: 'Visual Studio Installer discovery tool was not found.'
-            labels: [
-                {
-                    text: 'Missing executable'
-                    span: (metadata $vswhere_path).span
-                }
-            ]
-        }
-    }
-
-    let discovery_result = (
-        ^$vswhere_path -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    let installation = (
+        ^$discovery -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
         | complete
     )
-
-    if $discovery_result.exit_code != 0 {
-        print --stderr $discovery_result.stderr
-        exit $discovery_result.exit_code
+    if $installation.exit_code != 0 {
+        print --stderr $installation.stderr
+        exit $installation.exit_code
     }
-
-    let installation_path = $discovery_result.stdout | str trim
-
-    if ($installation_path | is-empty) {
-        error make {
-            msg: 'No Visual Studio installation with MSVC C++ tools was found.'
-            labels: [
-                {
-                    text: 'Empty discovery result'
-                    span: (metadata $installation_path).span
-                }
-            ]
-        }
+    let directory = $installation.stdout | str trim
+    if ($directory | is-empty) {
+        print --stderr 'Visual Studio C++ tools are required for fuzzing.'
+        exit 1
     }
-
-    let developer_script_path = $installation_path | path join Common7 Tools VsDevCmd.bat
-
-    if not ($developer_script_path | path exists) {
-        error make {
-            msg: 'The selected Visual Studio installation has no VsDevCmd.bat.'
-            labels: [
-                {
-                    text: 'Missing script'
-                    span: (metadata $developer_script_path).span
-                }
-            ]
-        }
-    }
-
-    let oracle_path = $env.VERMIS_ORACLE? | default $default_oracle_path
-    let fuzz_suffix = if ($fuzz_args | is-empty) {
-        ''
-    } else {
-        $" -- ($fuzz_args | str join ' ')"
-    }
-    let fuzz_command = $"cargo fuzz run ($target)($fuzz_suffix)"
-    let commands = ([
-        $'call "($developer_script_path)" -arch=x64'
-        $'set "VERMIS_ORACLE=($oracle_path)"'
-        $fuzz_command
+    let developer = $directory | path join Common7 Tools VsDevCmd.bat
+    let suffix = if ($arguments | is-empty) { '' } else { $" -- ($arguments | str join ' ')" }
+    let commands = [
+        $'call "($developer)" -arch=x64'
+        'if errorlevel 1 exit /b %errorlevel%'
+        $'cargo fuzz run ($target)($suffix)'
         'exit /b %errorlevel%'
         ''
-    ] | str join (char crlf))
-
+    ] | str join (char crlf)
     try {
         $commands | ^$env.ComSpec /d
     } catch {|error| exit $error.exit_code }
-
     exit 0
 }

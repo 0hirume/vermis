@@ -13,22 +13,8 @@ bstr = "1.13.1"
 vermis = { path = ".." }
 
 [[bin]]
-name = "lexer"
-path = "lexer.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "differential"
-path = "differential.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "conformance"
-path = "conformance.rs"
+name = "parser"
+path = "parser.rs"
 test = false
 doc = false
 bench = false

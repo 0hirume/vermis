@@ -1,9 +1,0 @@
-CompileFlags:
-  CompilationDatabase: target/oracle
-
-Diagnostics:
-  ClangTidy:
-    Add:
-      - bugprone-*
-      - performance-*
-      - readability-magic-numbers

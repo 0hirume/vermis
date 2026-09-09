@@ -1,255 +1,251 @@
 use bstr::BStr;
-use vermis::{
-    BinaryOperator, ExpressionKind, ParseErrorKind, Statement, TokenKind, UnaryOperator, parse,
-    parse_expression, parse_type,
-};
+use vermis::{Kind, Tree, parse};
 
-fn parse_source(source: &[u8]) -> vermis::Chunk {
-    parse(BStr::new(source)).unwrap_or_else(|error| panic!("parse failed: {error:?}"))
-}
+fn check(source: &[u8]) -> Tree<'_> {
+    let tree = parse(BStr::new(source));
+    let restored: Vec<_> = tree
+        .tokens
+        .iter()
+        .flat_map(|token| token.bytes(tree.source).iter().copied())
+        .collect();
+    assert_eq!(restored, source);
+    assert_eq!(tree.text(tree.root), source);
 
-#[test]
-fn parses_expression_precedence_and_unary_operators() {
-    let chunk = parse_source(b"local value = -a ^ 2 + #b * ~c and not d or e");
-    let Statement::Local { values, .. } = &chunk.body[0] else {
-        panic!("expected local statement");
-    };
-    let expression = &values[0];
+    let mut parents = vec![0; tree.nodes.len()];
 
-    let ExpressionKind::Binary {
-        operator: BinaryOperator::Or,
-        left,
-        right,
-    } = &expression.kind
-    else {
-        panic!("expected or expression");
-    };
-    assert!(matches!(right.kind, ExpressionKind::Name));
+    for (index, node) in tree.nodes.iter().enumerate() {
+        assert!(node.span.start <= node.span.end && node.span.end <= source.len());
+        let mut end = node.span.start;
 
-    let ExpressionKind::Binary {
-        operator: BinaryOperator::And,
-        left: and_left,
-        right: and_right,
-    } = &left.kind
-    else {
-        panic!("expected and expression");
-    };
-    assert!(matches!(
-        and_right.kind,
-        ExpressionKind::Unary {
-            operator: UnaryOperator::Not,
-            ..
+        for child in &node.children {
+            assert!(*child < index);
+            let span = tree.nodes[*child].span;
+            assert!(span.start >= end && span.end <= node.span.end);
+            end = span.end;
+            parents[*child] += 1;
         }
-    ));
-    assert!(matches!(
-        and_left.kind,
-        ExpressionKind::Binary {
-            operator: BinaryOperator::Add,
-            ..
+    }
+
+    assert_eq!(parents[tree.root], 0);
+    assert!(
+        parents
+            .iter()
+            .enumerate()
+            .all(|(index, count)| index == tree.root || *count == 1)
+    );
+
+    for error in &tree.diagnostics {
+        assert!(error.span.start <= error.span.end && error.span.end <= source.len());
+    }
+
+    tree
+}
+
+fn accepted(source: &str) -> Tree<'_> {
+    let tree = check(source.as_bytes());
+    assert!(
+        tree.diagnostics.is_empty(),
+        "{source:?}: {:?}",
+        tree.diagnostics
+    );
+
+    tree
+}
+
+#[test]
+fn precedence_and_associativity() {
+    for (source, operator, left, right) in [
+        ("return a + b * c", "+", "a", "b * c"),
+        ("return a - b - c", "-", "a - b", "c"),
+        ("return a ^ b ^ c", "^", "a", "b ^ c"),
+        ("return a .. b .. c", "..", "a", "b .. c"),
+        ("return a or b and c", "or", "a", "b and c"),
+    ] {
+        let tree = accepted(source);
+        let binary = tree
+            .nodes
+            .iter()
+            .rfind(|node| node.kind == Kind::Binary)
+            .unwrap();
+        assert_eq!(tree.text(binary.children[0]), left.as_bytes());
+        assert_eq!(tree.text(binary.children[1]), operator.as_bytes());
+        assert_eq!(tree.text(binary.children[2]), right.as_bytes());
+    }
+
+    let tree = accepted("return -a ^ 2");
+    let unary = tree
+        .nodes
+        .iter()
+        .find(|node| node.kind == Kind::Unary)
+        .unwrap();
+    assert_eq!(tree.nodes[unary.children[1]].kind, Kind::Binary);
+}
+
+#[test]
+fn grammar() {
+    for source in [
+        "if const ready = value then return ready elseif other then use() else fallback() end",
+        "while ready do if stop then break end continue end",
+        "repeat local ready = value until ready",
+        "for index = 1, limit, step do use(index) end",
+        "for key, value in pairs(values) do use(key, value) end",
+        "do local first, second: string = 1, 'two' first += 1 end",
+        "local function callback<Values...>(...: Values...): Values... return ... end",
+        "local result = object.field[index](1, 2):method {name = 'value', [key] = value, true}",
+        "local message = `hello {name}, {`nested {other}`}`",
+        "local value = if ready then first elseif other then second else third",
+        "local callback = @native function(value) return value end",
+        "@[deprecated({reason = 'old'})] function old() end",
+        "export const answer = 42",
+        "export type Value<T> = {value: T}",
+        "type function identity(value) return value end",
+        "type Result<First = number, Rest... = (string)> = (First, Rest...) -> Rest...",
+        "type Value = First<(number), (string)?, ...number>",
+        "type Value = {read first: number, write second: string, [string]: number}",
+        "type Value = {[\"key\"]: typeof(value.field)}",
+        "type Value = <T>(value: T) -> (T, string)",
+        "type Value = number | (string & boolean)",
+        "type Value = {number}",
+        "local value = callback<<number, (string, boolean)>>(input) :: number",
+        "declare version: string declare function print(value: string): ()",
+        "declare function collect(...: string)",
+        "@checked declare function callback(value: string): string",
+        "declare callback: @checked (value: string) -> string",
+        "@native local function callback() end",
+        "local value = object:method<<number>>(1)",
+        "type Value = | number | string",
+        "type Value = & First & Second",
+        "declare extern type Box extends Parent with value: number function get(self): number end",
+        "open class Box extends Parent public value: string function get(self): string return self.value end end",
+        "local type, class, const, declare, export, continue = 1, 2, 3, 4, 5, 6",
+        "type() class() const() declare() export() continue()",
+    ] {
+        accepted(source);
+    }
+}
+
+#[test]
+fn types_are_structured() {
+    let tree = accepted("type Value<T> = {read value: T?, callback: (T) -> (T, string)}");
+    for kind in [
+        Kind::TypeAlias,
+        Kind::Generics,
+        Kind::TypeTable,
+        Kind::TypeField,
+        Kind::TypeOptional,
+        Kind::TypeFunctionExpression,
+        Kind::TypePack,
+    ] {
+        assert!(
+            tree.nodes.iter().any(|node| node.kind == kind),
+            "missing {kind:?}"
+        );
+    }
+
+    let tree = accepted("local value = callback<<number>>(input)");
+    let call = tree
+        .nodes
+        .iter()
+        .find(|node| node.kind == Kind::Call)
+        .unwrap();
+    assert_eq!(tree.nodes[call.children[0]].kind, Kind::Instantiate);
+}
+
+#[test]
+fn malformed_syntax() {
+    for source in [
+        "local = 1",
+        "local value =",
+        "local value = f(,)",
+        "function f(a,) end",
+        "local value = {key = }",
+        "type Value = (number, string)",
+        "type Value = number | string & boolean",
+        "type Value = number & string?",
+        "type Value = number? & string",
+        "type Value = Box<>",
+        "type Value<T..., U> = T",
+        "type Value<Rest... = number> = number",
+        "type Value = Box<(number, string) | boolean>",
+        "type Value = {key?: string}",
+        "return 0x",
+        "return 0b2",
+        "return 1e",
+        "return 1.2i",
+        "return '\\xgg'",
+        "return '\\256'",
+        "return '\\u{}'",
+        "return '\\u{110000}'",
+        "return (value",
+        "if value then",
+        "(1) = value",
+        "return 1 local value = 2",
+    ] {
+        let tree = check(source.as_bytes());
+        assert!(!tree.diagnostics.is_empty(), "accepted {source:?}");
+    }
+}
+
+#[test]
+fn nesting_boundary() {
+    for depth in [255, 256] {
+        accepted(&format!("{}{}", "do ".repeat(depth), "end ".repeat(depth)));
+    }
+
+    let source = format!("{}{}", "do ".repeat(257), "end ".repeat(257));
+    let tree = check(source.as_bytes());
+    assert!(
+        tree.diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "syntax nesting limit exceeded")
+    );
+}
+
+#[test]
+fn recovery_and_bytes() {
+    let tree = check(b"local broken = )\nlocal valid = '\xff' -- comment\nreturn valid");
+    assert!(!tree.diagnostics.is_empty());
+    assert!(
+        tree.nodes.iter().any(|node| node.kind == Kind::Local
+            && node.span.bytes(tree.source) == b"local valid = '\xff'")
+    );
+    assert!(tree.nodes.iter().any(|node| node.kind == Kind::Return));
+
+    for first in u8::MIN..=u8::MAX {
+        for second in u8::MIN..=u8::MAX {
+            check(&[first, second]);
         }
-    ));
-}
+    }
 
-#[test]
-fn parses_calls_fields_indexes_and_table_constructors() {
-    let source =
-        b"local value = object.field[index](1, 2):method {name = 'value', [key] = value, true}";
-    let chunk = parse_source(source);
-    let Statement::Local { values, .. } = &chunk.body[0] else {
-        panic!("expected local statement");
-    };
+    for source in [
+        "if x then f() else g() end",
+        "type Value<T> = (T) -> {value: T}",
+        "return `hello {value}`",
+    ] {
+        for end in 0..=source.len() {
+            check(&source.as_bytes()[..end]);
+        }
+    }
 
-    let ExpressionKind::Call {
-        method: Some(method),
-        arguments,
-        ..
-    } = &values[0].kind
-    else {
-        panic!("expected method call");
-    };
-    assert_eq!(method.bytes(BStr::new(source)), b"method");
-    assert_eq!(arguments.len(), 1);
-    let ExpressionKind::Table(fields) = &arguments[0].kind else {
-        panic!("expected table argument");
-    };
-    assert_eq!(fields.len(), 3);
-}
+    let deep = format!("return {}value{}", "(".repeat(1000), ")".repeat(1000));
+    assert!(!check(deep.as_bytes()).diagnostics.is_empty());
 
-#[test]
-fn parses_control_flow_and_loops() {
-    let chunk = parse_source(
-        br"
-            if ready then
-                while running do
-                    continue
-                end
-            elseif retry then
-                repeat
-                    break
-                until done
-            else
-                do
-                    return 1, 2
-                end
-            end
-            for i = 1, 10, 2 do print(i) end
-            for key, value in pairs(items) do value = key end
-        ",
-    );
+    for source in [
+        format!("{}{}", "do ".repeat(1001), "end ".repeat(1001)),
+        format!(
+            "type Value = {}number{}",
+            "{field: ".repeat(1000),
+            "}".repeat(1000)
+        ),
+        format!("return {}value", "if ready then value else ".repeat(1000)),
+        format!(
+            "return {}1{}",
+            "function() return ".repeat(1000),
+            " end".repeat(1000)
+        ),
+    ] {
+        assert!(!check(source.as_bytes()).diagnostics.is_empty());
+    }
 
-    assert!(matches!(chunk.body[0], Statement::If { .. }));
-    assert!(matches!(chunk.body[1], Statement::NumericFor { .. }));
-    assert!(matches!(chunk.body[2], Statement::GenericFor { .. }));
-}
-
-#[test]
-fn parses_functions_and_attributes() {
-    let source = b"@[native] function module.create:value(first, second, ...) \
-        local result = first return result end local function helper() end";
-    let chunk = parse_source(source);
-
-    let Statement::Function {
-        attributes,
-        name,
-        function,
-        ..
-    } = &chunk.body[0]
-    else {
-        panic!("expected function statement");
-    };
-    assert_eq!(attributes.len(), 1);
-    assert_eq!(name.parts.len(), 2);
-    assert_eq!(
-        name.method.expect("method name").bytes(BStr::new(source)),
-        b"value"
-    );
-    assert_eq!(function.parameters.len(), 2);
-    assert!(function.variadic);
-
-    assert!(matches!(chunk.body[1], Statement::LocalFunction { .. }));
-}
-
-#[test]
-fn parses_function_expressions_and_interpolation() {
-    let source = b"local callback = @native function(value) return value end\n\
-        local message = `hello {name}!`";
-    let chunk = parse_source(source);
-    let Statement::Local { values, .. } = &chunk.body[0] else {
-        panic!("expected function local");
-    };
-    assert!(matches!(values[0].kind, ExpressionKind::Function(_)));
-
-    let Statement::Local { values, .. } = &chunk.body[1] else {
-        panic!("expected interpolation local");
-    };
-    let ExpressionKind::Interpolated(expressions) = &values[0].kind else {
-        panic!("expected interpolation");
-    };
-    assert_eq!(expressions.len(), 1);
-}
-
-#[test]
-fn preserves_spans_for_byte_source() {
-    let source = b"local value = '\xff'";
-    let chunk = parse_source(source);
-    let Statement::Local {
-        bindings, values, ..
-    } = &chunk.body[0]
-    else {
-        panic!("expected local statement");
-    };
-    assert_eq!(bindings[0].name.bytes(BStr::new(source)), b"value");
-    assert_eq!(values[0].span.bytes(BStr::new(source)), b"'\xff'");
-}
-
-#[test]
-fn reports_lexical_errors_with_their_original_span() {
-    let source = b"local \xff = 1";
-    let error = parse(BStr::new(source)).expect_err("invalid name should fail");
-    assert!(matches!(
-        error.kind,
-        ParseErrorKind::Lexical(TokenKind::Error(_))
-    ));
-    assert_eq!(error.span.start, 6);
-    assert_eq!(error.span.end, 7);
-}
-
-#[test]
-fn rejects_non_assignable_statement_expressions() {
-    let error = parse(BStr::new(b"1 = value")).expect_err("literal cannot be assigned");
-    assert_eq!(error.kind, ParseErrorKind::InvalidAssignmentTarget);
-}
-
-#[test]
-fn parses_standalone_expression_and_type_apis() {
-    assert!(matches!(
-        parse_expression(BStr::new(b"value + 1"))
-            .expect("expression should parse")
-            .kind,
-        ExpressionKind::Binary { .. }
-    ));
-    assert!(parse_type(BStr::new(b"{value: string}")).is_ok());
-}
-
-#[test]
-fn parses_types_annotations_generics_and_assertions() {
-    let source = br"
-        type Result<T> = {value: T, [string]: number} | nil
-        type Mapper<T> = <T>(T) -> T
-        function identity<T>(value: T, ...: T): T return value end
-        local result: Result<string> = identity<<string>>(value) :: string
-        local packed = identity<<(string, number)>>(value)
-    ";
-    let chunk = parse_source(source);
-
-    assert!(matches!(chunk.body[0], Statement::TypeAlias { .. }));
-    assert!(matches!(chunk.body[1], Statement::TypeAlias { .. }));
-    assert!(matches!(chunk.body[2], Statement::Function { .. }));
-    let Statement::Local {
-        bindings, values, ..
-    } = &chunk.body[3]
-    else {
-        panic!("expected typed local");
-    };
-    assert!(bindings[0].annotation.is_some());
-    assert!(matches!(
-        values[0].kind,
-        ExpressionKind::TypeAssertion { .. }
-    ));
-    assert!(matches!(chunk.body[4], Statement::Local { .. }));
-}
-
-#[test]
-fn parses_if_expressions_and_local_conditions() {
-    let chunk = parse_source(
-        b"local value = if ready then candidate elseif fallback then fallback else nil",
-    );
-    let Statement::Local { values, .. } = &chunk.body[0] else {
-        panic!("expected local statement");
-    };
-    assert!(matches!(values[0].kind, ExpressionKind::IfElse { .. }));
-
-    let conditional = parse_source(b"if const ready = value then return ready end");
-    assert!(matches!(conditional.body[0], Statement::If { .. }));
-}
-
-#[test]
-fn parses_declarations_classes_exports_and_attribute_arguments() {
-    let source = br#"
-        @deprecated({reason = "old"}) function old() end
-        export const answer: number = 42
-        declare global version: string
-        declare function print(value: string): nil
-        class Box extends Parent
-            public value: string
-            function get(self): string return self.value end
-        end
-    "#;
-    let chunk = parse_source(source);
-
-    assert!(matches!(chunk.body[0], Statement::Function { .. }));
-    assert!(matches!(chunk.body[1], Statement::Export { .. }));
-    assert!(matches!(chunk.body[2], Statement::DeclareGlobal { .. }));
-    assert!(matches!(chunk.body[3], Statement::DeclareFunction { .. }));
-    assert!(matches!(chunk.body[4], Statement::Class { .. }));
+    accepted(&format!("return value{}", ".field".repeat(1000)));
 }

@@ -1,60 +1,51 @@
-#[allow(dead_code)]
-#[path = "support/oracle.rs"]
-mod oracle;
-#[allow(dead_code)]
-#[path = "support/parser.rs"]
-mod parser;
-
-use std::fs;
-use std::path::{Path, PathBuf};
-
-fn oracle() -> oracle::Oracle {
-    let path = std::env::var_os("VERMIS_ORACLE")
-        .map(PathBuf::from)
-        .expect("VERMIS_ORACLE must point to the Luau oracle executable");
-
-    oracle::Oracle::spawn(&path).expect("failed to start Luau oracle")
-}
-
-fn walk(path: &Path, files: &mut Vec<PathBuf>) {
-    let entries = fs::read_dir(path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-
-    for entry in entries {
-        let entry = entry.unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-        let path = entry.path();
-
-        if path.is_dir() {
-            walk(&path, files);
-        } else if path
-            .extension()
-            .is_some_and(|extension| extension == "lua" || extension == "luau")
-        {
-            files.push(path);
-        }
-    }
-}
+use bstr::BStr;
+use std::{fs, path::Path};
+use vermis::parse;
 
 #[test]
-#[ignore = "requires the built Luau oracle"]
-fn conformance_ast_parity() {
-    let mut files = Vec::new();
-    walk(Path::new("vendor/luau/tests/conformance"), &mut files);
+fn upstream_programs() {
+    let directory = Path::new("vendor/luau/tests/conformance");
+    let mut files: Vec<_> = fs::read_dir(directory)
+        .expect("pinned Luau corpus is required")
+        .map(|entry| entry.expect("corpus entry").path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "luau" || extension == "lua")
+        })
+        .collect();
     files.sort();
+    assert!(!files.is_empty(), "upstream corpus is empty");
 
-    let mut oracle = oracle();
-    let mut mismatches = Vec::new();
+    let mut failures = Vec::new();
 
     for path in files {
-        let source = fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-        if let Err(error) = parser::compare_chunk(&mut oracle, &source) {
-            mismatches.push(format!("{}: {error}", path.display()));
+        let source = fs::read(&path).expect("read corpus program");
+        let tree = parse(BStr::new(&source));
+
+        if !tree.diagnostics.is_empty() {
+            failures.push(format!("{}: {:?}", path.display(), tree.diagnostics));
+        }
+
+        let restored: Vec<_> = tree
+            .tokens
+            .iter()
+            .flat_map(|token| token.bytes(tree.source).iter().copied())
+            .collect();
+        assert_eq!(restored, source, "{}", path.display());
+        assert_eq!(tree.text(tree.root), source.as_slice());
+
+        for node in &tree.nodes {
+            for child in &node.children {
+                let span = tree.nodes[*child].span;
+                assert!(
+                    node.span.start <= span.start && span.end <= node.span.end,
+                    "{}: {node:?}, child: {:?}",
+                    path.display(),
+                    tree.nodes[*child]
+                );
+            }
         }
     }
 
-    assert!(
-        mismatches.is_empty(),
-        "{} mismatches:\n{}",
-        mismatches.len(),
-        mismatches.join("\n")
-    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
