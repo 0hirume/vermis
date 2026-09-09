@@ -1,0 +1,22 @@
+[package]
+name = "vermis"
+version = "0.1.0"
+edition = "2024"
+repository = "https://github.com/0hirume/vermis"
+license = "MIT"
+
+[dependencies]
+bstr = "1.13.1"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+
+[lints.rust]
+deprecated_safe = { level = "deny", priority = -1 }
+let_underscore = { level = "deny", priority = -1 }
+rust_2018_idioms = { level = "deny", priority = -1 }
+unsafe_code = "deny"
+unused = { level = "deny", priority = -1 }
+warnings = { level = "deny", priority = -1 }

@@ -1,0 +1,3 @@
+[tools]
+"aqua:tombi-toml/tombi" = "latest"
+rust = { version = "nightly", profile = "minimal", components = ["rust-analyzer", "rustfmt", "clippy"] }
