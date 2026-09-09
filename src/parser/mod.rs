@@ -175,10 +175,6 @@ impl Parser<'_> {
         let mut statements: Vec<usize> = Vec::new();
 
         while !self.at(TokenKind::Eof) && !stops.iter().any(|stop| self.keyword(*stop)) {
-            if self.consume(TokenKind::Byte(b';')) {
-                continue;
-            }
-
             if statements.last().is_some_and(|statement| {
                 matches!(
                     self.tree.nodes[*statement].kind,
@@ -195,7 +191,10 @@ impl Parser<'_> {
             let begin = self.current().span.start;
 
             match self.nested(Self::statement) {
-                Ok(statement) => statements.push(statement),
+                Ok(statement) => {
+                    statements.push(statement);
+                    self.consume(TokenKind::Byte(b';'));
+                }
                 Err(error) => {
                     self.tree.nodes.truncate(checkpoint);
                     self.tree.diagnostics.push(error);
@@ -209,6 +208,10 @@ impl Parser<'_> {
     }
 
     fn recover(&mut self, start: usize, stops: &[Keyword]) {
+        if self.consume(TokenKind::Byte(b';')) {
+            return;
+        }
+
         while !self.at(TokenKind::Eof) {
             if stops.iter().any(|stop| self.keyword(*stop)) {
                 break;

@@ -15,7 +15,17 @@ impl Parser<'_> {
                     return Ok(declaration);
                 }
 
-                let local = self.consume(TokenKind::Keyword(Keyword::Local));
+                if self.named(b"export") {
+                    return self.export(start, vec![attributes]);
+                }
+
+                let constant = self.named(b"const");
+                let local = constant || self.consume(TokenKind::Keyword(Keyword::Local));
+
+                if constant {
+                    self.take();
+                }
+
                 self.expect(
                     TokenKind::Keyword(Keyword::Function),
                     "expected function after attributes",
@@ -91,7 +101,13 @@ impl Parser<'_> {
         let start = self.current().span.start;
 
         match self.current().kind {
-            TokenKind::Name if self.named(b"const") && self.next() == TokenKind::Name => {
+            TokenKind::Name
+                if self.named(b"const")
+                    && matches!(
+                        self.next(),
+                        TokenKind::Name | TokenKind::Keyword(Keyword::Function)
+                    ) =>
+            {
                 self.local(true)
             }
 
@@ -136,22 +152,7 @@ impl Parser<'_> {
                         TokenKind::Name | TokenKind::Keyword(Keyword::Local | Keyword::Function)
                     ) =>
             {
-                self.take();
-                let statement = self.nested(Self::statement)?;
-
-                if !matches!(
-                    self.tree.nodes[statement].kind,
-                    Kind::Local
-                        | Kind::Constant
-                        | Kind::Function
-                        | Kind::TypeAlias
-                        | Kind::TypeFunction
-                        | Kind::Class
-                ) {
-                    return Err(self.error("expected exportable declaration"));
-                }
-
-                Ok(self.node(Kind::Export, start, vec![statement]))
+                self.export(start, Vec::new())
             }
 
             TokenKind::Name
@@ -170,10 +171,41 @@ impl Parser<'_> {
         }
     }
 
+    fn export(&mut self, start: usize, mut children: Vec<usize>) -> Parsed {
+        self.take();
+        let begin = self.current().span.start;
+
+        let statement = if self.consume(TokenKind::Keyword(Keyword::Function)) {
+            let name = self.name()?;
+            self.function(begin, Kind::Function, vec![name])?
+        } else {
+            if !children.is_empty() {
+                return Err(self.error("expected exported function"));
+            }
+
+            self.nested(Self::statement)?
+        };
+
+        if !matches!(
+            self.tree.nodes[statement].kind,
+            Kind::Local
+                | Kind::Constant
+                | Kind::Function
+                | Kind::TypeAlias
+                | Kind::TypeFunction
+                | Kind::Class
+        ) {
+            return Err(self.error("expected exportable declaration"));
+        }
+
+        children.push(statement);
+        Ok(self.node(Kind::Export, start, children))
+    }
+
     fn local(&mut self, constant: bool) -> Parsed {
         let start = self.take().span.start;
 
-        if !constant && self.consume(TokenKind::Keyword(Keyword::Function)) {
+        if self.consume(TokenKind::Keyword(Keyword::Function)) {
             let name = self.name()?;
             return self.function(start, Kind::LocalFunction, vec![name]);
         }
@@ -453,7 +485,7 @@ impl Parser<'_> {
             children = self.signature(children)?;
         } else {
             self.expect(TokenKind::Byte(b':'), "expected declared type")?;
-            children.push(self.annotation()?);
+            children.push(self.declaration_annotation()?);
         }
 
         Ok(self.node(Kind::Declaration, start, children))
@@ -465,11 +497,21 @@ impl Parser<'_> {
 
         if self.named(b"extends") {
             let begin = self.take().span.start;
-            let mut path = vec![self.name()?];
-            while self.consume(TokenKind::Byte(b'.')) {
-                path.push(self.name()?);
+            let reference_start = self.current().span.start;
+            let mut reference = self.name()?;
+
+            if !external {
+                if self.consume(TokenKind::Byte(b'.')) {
+                    let name = self.name()?;
+                    reference = self.node(Kind::Field, reference_start, vec![reference, name]);
+                } else if self.consume(TokenKind::Byte(b'[')) {
+                    let index = self.expression(0)?;
+                    self.expect(TokenKind::Byte(b']'), "expected closing superclass index")?;
+                    reference = self.node(Kind::Index, reference_start, vec![reference, index]);
+                }
             }
-            children.push(self.node(Kind::Extends, begin, path));
+
+            children.push(self.node(Kind::Extends, begin, vec![reference]));
         }
 
         if external {
@@ -481,28 +523,41 @@ impl Parser<'_> {
 
         while !self.block_end() {
             let begin = self.current().span.start;
-            let public = self.named(b"public");
+            let attributes = if external
+                && matches!(
+                    self.current().kind,
+                    TokenKind::Attribute | TokenKind::AttributeOpen
+                ) {
+                Some(self.attributes()?)
+            } else {
+                None
+            };
+            let public = !external && self.named(b"public");
 
-            if public
-                || (external
-                    && (self.named(b"read") || self.named(b"write"))
-                    && self.next() != TokenKind::Byte(b':'))
-            {
+            if public {
                 self.take();
             }
 
             if self.consume(TokenKind::Keyword(Keyword::Function)) {
                 let name = self.name()?;
                 let method = if external {
-                    let parts = self.signature(vec![name])?;
+                    if !self.byte(b'(') {
+                        return Err(self.error("expected method parameters"));
+                    }
+
+                    let mut parts: Vec<_> = attributes.into_iter().collect();
+                    parts.push(name);
+                    let parts = self.signature(parts)?;
                     self.node(Kind::Method, begin, parts)
                 } else {
                     self.function(begin, Kind::Method, vec![name])?
                 };
                 children.push(method);
+            } else if attributes.is_some() {
+                return Err(self.error("expected method after attributes"));
             } else if public || external {
                 children.push(if external {
-                    self.type_field()?
+                    self.type_field(false)?
                 } else {
                     let binding = self.binding()?;
                     self.node(Kind::Property, begin, vec![binding])

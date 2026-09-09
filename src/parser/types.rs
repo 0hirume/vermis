@@ -2,7 +2,11 @@ use super::{Keyword, Kind, Operator, Parsed, Parser, TokenKind};
 
 impl Parser<'_> {
     pub(super) fn annotation(&mut self) -> Parsed {
-        self.nested(|parser| parser.composite(false))
+        self.nested(|parser| parser.composite(false, false))
+    }
+
+    pub(super) fn declaration_annotation(&mut self) -> Parsed {
+        self.nested(|parser| parser.composite(false, true))
     }
 
     pub(super) fn type_argument(&mut self) -> Parsed {
@@ -11,7 +15,7 @@ impl Parser<'_> {
         {
             self.pack()
         } else {
-            self.nested(|parser| parser.composite(true))
+            self.nested(|parser| parser.composite(true, false))
         }
     }
 
@@ -31,7 +35,7 @@ impl Parser<'_> {
         }
     }
 
-    fn composite(&mut self, allow_pack: bool) -> Parsed {
+    fn composite(&mut self, allow_pack: bool, declaration: bool) -> Parsed {
         let start = self.current().span.start;
         let leading = if self.byte(b'|') || self.byte(b'&') {
             Some(self.take().kind)
@@ -39,7 +43,10 @@ impl Parser<'_> {
             None
         };
 
-        let mut left = self.simple_type(allow_pack && leading.is_none())?;
+        let mut left = self.simple_type(
+            allow_pack && leading.is_none(),
+            declaration && leading.is_none(),
+        )?;
 
         if self.tree.nodes[left].kind == Kind::TypePack {
             return Ok(left);
@@ -76,7 +83,7 @@ impl Parser<'_> {
                 }
 
                 separator = Some(token);
-                let right = self.nested(|parser| parser.simple_type(false))?;
+                let right = self.nested(|parser| parser.simple_type(false, false))?;
 
                 left = self.node(
                     if token == TokenKind::Byte(b'|') {
@@ -95,17 +102,21 @@ impl Parser<'_> {
         Ok(left)
     }
 
-    fn simple_type(&mut self, allow_pack: bool) -> Parsed {
+    fn simple_type(&mut self, allow_pack: bool, declaration: bool) -> Parsed {
         let start = self.current().span.start;
 
         match self.current().kind {
             TokenKind::Keyword(Keyword::Nil) => Ok(self.leaf(Kind::Nil)),
             TokenKind::Keyword(Keyword::True | Keyword::False) => Ok(self.leaf(Kind::Boolean)),
             TokenKind::QuotedString | TokenKind::RawString => self.string(),
-            TokenKind::Byte(b'{') => self.type_table(),
+            TokenKind::Byte(b'{') => self.type_table(declaration),
             TokenKind::Byte(b'(' | b'<') => self.function_type(allow_pack),
 
             TokenKind::Attribute | TokenKind::AttributeOpen => {
+                if !declaration {
+                    return Err(self.error("function type attributes require a declaration"));
+                }
+
                 let attributes = self.attributes()?;
                 let function = self.function_type(false)?;
 
@@ -150,10 +161,14 @@ impl Parser<'_> {
     pub(super) fn type_arguments(&mut self) -> Parsed {
         let start = self.current().span.start;
         self.expect(TokenKind::Byte(b'<'), "expected type arguments")?;
-        let mut arguments = vec![self.type_argument()?];
+        let mut arguments = Vec::new();
 
-        while self.consume(TokenKind::Byte(b',')) {
+        if !self.byte(b'>') {
             arguments.push(self.type_argument()?);
+
+            while self.consume(TokenKind::Byte(b',')) {
+                arguments.push(self.type_argument()?);
+            }
         }
 
         self.expect(TokenKind::Byte(b'>'), "expected closing type arguments")?;
@@ -302,25 +317,41 @@ impl Parser<'_> {
         Ok(parameters)
     }
 
-    fn type_table(&mut self) -> Parsed {
+    fn type_table(&mut self, declaration: bool) -> Parsed {
         let start = self.take().span.start;
         let mut fields = Vec::new();
-        let shorthand = !self.byte(b'}')
-            && !self.byte(b'[')
-            && !(self.at(TokenKind::Name)
-                && (self.next() == TokenKind::Byte(b':')
-                    || self.named(b"read")
-                    || self.named(b"write")));
 
-        if shorthand {
-            fields.push(self.annotation()?);
-        } else {
-            while !self.byte(b'}') {
-                fields.push(self.type_field()?);
+        while !self.byte(b'}') {
+            let begin = self.current().span.start;
+            let access = if fields.is_empty()
+                && (self.named(b"read") || self.named(b"write"))
+                && self.next() != TokenKind::Byte(b':')
+            {
+                Some(self.leaf(Kind::Operator))
+            } else {
+                None
+            };
+            let shorthand = fields.is_empty()
+                && !self.byte(b'[')
+                && !(self.at(TokenKind::Name) && self.next() == TokenKind::Byte(b':'));
 
-                if !self.consume(TokenKind::Byte(b',')) && !self.consume(TokenKind::Byte(b';')) {
-                    break;
-                }
+            if shorthand {
+                fields.extend(access);
+                fields.push(self.annotation()?);
+                break;
+            }
+
+            let field = self.type_field(declaration)?;
+
+            if let Some(access) = access {
+                self.tree.nodes[field].span.start = begin;
+                self.tree.nodes[field].children.insert(0, access);
+            }
+
+            fields.push(field);
+
+            if !self.consume(TokenKind::Byte(b',')) && !self.consume(TokenKind::Byte(b';')) {
+                break;
             }
         }
 
@@ -328,7 +359,7 @@ impl Parser<'_> {
         Ok(self.node(Kind::TypeTable, start, fields))
     }
 
-    pub(super) fn type_field(&mut self) -> Parsed {
+    pub(super) fn type_field(&mut self, declaration: bool) -> Parsed {
         let start = self.current().span.start;
         let mut children = Vec::new();
 
@@ -337,6 +368,12 @@ impl Parser<'_> {
         }
 
         let indexed = self.consume(TokenKind::Byte(b'['));
+        let property = indexed
+            && matches!(
+                self.current().kind,
+                TokenKind::QuotedString | TokenKind::RawString
+            )
+            && self.next() == TokenKind::Byte(b']');
 
         if indexed {
             children.push(self.annotation()?);
@@ -346,10 +383,14 @@ impl Parser<'_> {
         }
 
         self.expect(TokenKind::Byte(b':'), "expected field type")?;
-        children.push(self.annotation()?);
+        children.push(if declaration && !indexed {
+            self.declaration_annotation()?
+        } else {
+            self.annotation()?
+        });
 
         Ok(self.node(
-            if indexed {
+            if indexed && !property {
                 Kind::TypeIndexer
             } else {
                 Kind::TypeField

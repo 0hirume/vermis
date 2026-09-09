@@ -125,6 +125,276 @@ fn grammar() {
 }
 
 #[test]
+fn attributed_declarations() {
+    for attributes in [
+        "@native",
+        "@[native, deprecated({reason = 'old'})]",
+        "@[deprecated {reason = 'old'}]",
+        "@[native 'message']",
+        "@[native [[message]]]",
+    ] {
+        for (keyword, kind) in [("export", Kind::Export), ("const", Kind::LocalFunction)] {
+            let source = format!(
+                "{attributes} {keyword} function identity<T>(value: T): T return value end"
+            );
+            let tree = accepted(&source);
+            let block = &tree.nodes[tree.nodes[tree.root].children[0]];
+            let statement = block.children[0];
+            let declaration = &tree.nodes[statement];
+
+            assert_eq!(declaration.kind, kind);
+            assert_eq!(tree.text(statement), source.as_bytes());
+            assert_eq!(tree.nodes[declaration.children[0]].kind, Kind::Attributes);
+            assert_eq!(tree.text(declaration.children[0]), attributes.as_bytes());
+
+            let function = if kind == Kind::Export {
+                &tree.nodes[declaration.children[1]]
+            } else {
+                declaration
+            };
+
+            for kind in [Kind::Generics, Kind::Parameters, Kind::Returns, Kind::Block] {
+                assert!(
+                    function
+                        .children
+                        .iter()
+                        .any(|child| tree.nodes[*child].kind == kind)
+                );
+            }
+        }
+    }
+
+    accepted("const function identity<T>(value: T): T return value end");
+    accepted("@native local function identity() end");
+    accepted("@native function module.identity() end");
+    accepted("@checked declare function identity(value: number): number");
+
+    for source in [
+        "@native export local value = 1",
+        "@native export const value = 1",
+        "@native export const function identity() end",
+        "@native export local function identity() end",
+        "@native export function module.identity() end",
+        "@native const value = 1",
+        "@native const function module.identity() end",
+    ] {
+        assert!(
+            !check(source.as_bytes()).diagnostics.is_empty(),
+            "accepted {source:?}"
+        );
+    }
+}
+
+#[test]
+fn classes_are_structured() {
+    for (reference, kind) in [
+        ("Parent", Kind::Name),
+        ("classes.Parent", Kind::Field),
+        ("classes['Parent']", Kind::Index),
+        ("classes[select(name)]", Kind::Index),
+    ] {
+        for prefix in ["class", "open class", "export class", "export open class"] {
+            let source = format!("{prefix} Child extends {reference} end");
+            let tree = accepted(&source);
+            let extends = tree
+                .nodes
+                .iter()
+                .find(|node| node.kind == Kind::Extends)
+                .unwrap();
+            let superclass = extends.children[0];
+
+            assert_eq!(tree.nodes[superclass].kind, kind);
+            assert_eq!(tree.text(superclass), reference.as_bytes());
+        }
+    }
+
+    for attributes in ["@checked", "@[checked, deprecated({reason = 'old'})]"] {
+        let source = format!(
+            "declare extern type Box extends Parent with {attributes} function get(self, key: string): number end"
+        );
+        let tree = accepted(&source);
+        let method = tree
+            .nodes
+            .iter()
+            .find(|node| node.kind == Kind::Method)
+            .unwrap();
+
+        assert_eq!(tree.nodes[method.children[0]].kind, Kind::Attributes);
+        assert_eq!(tree.text(method.children[0]), attributes.as_bytes());
+        assert_eq!(tree.text(method.children[1]), b"get");
+    }
+
+    accepted("declare extern type Box with public: number read: string write: boolean end");
+
+    for source in [
+        "class Child extends classes['Parent' end",
+        "class Child extends classes[] end",
+        "declare extern type Box with @checked value: number end",
+        "declare extern type Box with @checked end",
+    ] {
+        assert!(
+            !check(source.as_bytes()).diagnostics.is_empty(),
+            "accepted {source:?}"
+        );
+    }
+}
+
+#[test]
+fn access_types_are_structured() {
+    for access in ["read", "write"] {
+        let source = format!("type Array = {{{access} number}}");
+        let tree = accepted(&source);
+        let table = tree
+            .nodes
+            .iter()
+            .find(|node| node.kind == Kind::TypeTable)
+            .unwrap();
+
+        assert_eq!(tree.nodes[table.children[0]].kind, Kind::Operator);
+        assert_eq!(tree.text(table.children[0]), access.as_bytes());
+        assert_eq!(tree.text(table.children[1]), b"number");
+
+        for (field, kind) in [
+            ("value: number", Kind::TypeField),
+            ("['value']: number", Kind::TypeField),
+            ("[string]: number", Kind::TypeIndexer),
+        ] {
+            let mut sources = vec![format!("type Object = {{{access} {field}}}")];
+
+            if field == "value: number" {
+                sources.push(format!(
+                    "declare extern type Object with {access} {field} end"
+                ));
+            }
+
+            for source in sources {
+                let tree = accepted(&source);
+                let field = tree.nodes.iter().find(|node| node.kind == kind).unwrap();
+
+                assert_eq!(tree.nodes[field.children[0]].kind, Kind::Operator);
+                assert_eq!(tree.text(field.children[0]), access.as_bytes());
+            }
+        }
+    }
+
+    for source in [
+        "type Array = {read (number | string)}",
+        "type Array = {write {number}}",
+        "type Object = {read: number, write: string}",
+        "type Object = {read value: number, write [string]: string}",
+        "type Object = {[ [[key]] ]: number}",
+        "declare extern type Object with ['value']: number [string]: number end",
+    ] {
+        accepted(source);
+    }
+}
+
+#[test]
+fn enabled_syntax() {
+    for source in [
+        "@debugnoinline function identity(value) return value end",
+        "local identity = @[deprecated {reason = 'old'}] function(value) return value end",
+        "declare identity: @[checked 'message'] (number) -> number",
+        "declare extern type Box with @[deprecated {reason = 'old'}] function get(self): number end",
+        "export local first, second = 1, 2",
+        "export const first, second = 1, 2",
+        "export function identity<T>(value: T): T return value end",
+        "export type function identity(value) return value end",
+        "declare class: {new: (number) -> number}",
+        "local namespace = {} type Value = namespace.Value<number>",
+        "if local first: number = value then use(first) elseif const second = other then use(second) else fallback() end",
+        "function identity(): (number)? return nil end",
+        "function identity(): (number) | string return 1 end",
+        "function identity(): (number, ...string) return 1 end",
+        "function identity<Values...>(...: Values...): Values... return ... end",
+        "declare functions: {identity: @checked <T>(value: T) -> T}",
+        "local integers = {0i, 9_223_372_036_854_775_807i, 0xffffffffffffffffi, 0b1111i}",
+        "local identity = source<<number, (string, boolean), ...number>>",
+        "local value = source:identity<<number>>(1)",
+    ] {
+        accepted(source);
+    }
+
+    for source in ["return 0b0b1", "return 0b0B1i"] {
+        assert!(
+            !check(source.as_bytes()).diagnostics.is_empty(),
+            "accepted {source:?}"
+        );
+    }
+}
+
+#[test]
+fn empty_type_arguments() {
+    for source in [
+        "type Value = Box<>",
+        "type Value = namespace.Box<>",
+        "local value: Box<>",
+        "identity<<>>()",
+        "local identity = original<<>>",
+        "object:identity<<>>()",
+    ] {
+        let tree = accepted(source);
+        let arguments = tree
+            .nodes
+            .iter()
+            .position(|node| node.kind == Kind::TypeArguments)
+            .unwrap();
+
+        assert!(tree.nodes[arguments].children.is_empty());
+        assert_eq!(tree.text(arguments), b"<>");
+    }
+}
+
+#[test]
+fn exported_functions_are_structured() {
+    for source in [
+        "export function identity<T>(value: T): T return value end",
+        "@native export function identity<T>(value: T): T return value end",
+    ] {
+        let tree = accepted(source);
+        let export = tree
+            .nodes
+            .iter()
+            .find(|node| node.kind == Kind::Export)
+            .unwrap();
+        let function = &tree.nodes[*export.children.last().unwrap()];
+
+        assert_eq!(function.kind, Kind::Function);
+        assert_eq!(tree.nodes[function.children[0]].kind, Kind::Name);
+        assert_eq!(tree.text(function.children[0]), b"identity");
+    }
+}
+
+#[test]
+fn declaration_type_context() {
+    for source in [
+        "declare identity: @checked (number) -> number",
+        "declare library: {nested: {identity: @checked (number) -> number}}",
+        "declare library: {read identity: @checked (number) -> number}",
+        "declare identity: @checked () -> () | nil",
+    ] {
+        accepted(source);
+    }
+
+    for source in [
+        "type Identity = @checked () -> ()",
+        "local identity: @checked () -> ()",
+        "declare identity: nil | @checked () -> ()",
+        "declare identity: | @checked () -> ()",
+        "declare identity: (@checked () -> ())",
+        "declare library: {[@checked () -> ()]: number}",
+        "declare library: {['identity']: @checked () -> ()}",
+        "declare library: {@checked () -> ()}",
+        "declare library: Box<@checked () -> ()>",
+    ] {
+        assert!(
+            !check(source.as_bytes()).diagnostics.is_empty(),
+            "accepted {source:?}"
+        );
+    }
+}
+
+#[test]
 fn types_are_structured() {
     let tree = accepted("type Value<T> = {read value: T?, callback: (T) -> (T, string)}");
     for kind in [
@@ -154,6 +424,18 @@ fn types_are_structured() {
 #[test]
 fn malformed_syntax() {
     for source in [
+        ";",
+        "identity();;identity()",
+        "export function library.identity() end",
+        "export function library:identity() end",
+        "declare extern type Object with function identity<Value>(self) end",
+        "declare extern type Object with @checked function identity<Value>(self) end",
+        "type Value = {read write value: number}",
+        "type Value = {first: number, read write second: number}",
+        "type Value = Box<number,>",
+        "identity<<number,>>()",
+        "type Value<> = number",
+        "function identity<>() end",
         "local = 1",
         "local value =",
         "local value = f(,)",
@@ -163,7 +445,6 @@ fn malformed_syntax() {
         "type Value = number | string & boolean",
         "type Value = number & string?",
         "type Value = number? & string",
-        "type Value = Box<>",
         "type Value<T..., U> = T",
         "type Value<Rest... = number> = number",
         "type Value = Box<(number, string) | boolean>",

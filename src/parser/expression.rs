@@ -255,7 +255,12 @@ impl Parser<'_> {
                     let begin = self.current().span.start;
                     let mut children = vec![self.name()?];
 
-                    if self.byte(b'(') {
+                    if matches!(
+                        self.current().kind,
+                        TokenKind::Byte(b'(' | b'{')
+                            | TokenKind::QuotedString
+                            | TokenKind::RawString
+                    ) {
                         children.push(self.arguments()?);
                     }
 
