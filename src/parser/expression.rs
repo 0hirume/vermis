@@ -1,5 +1,6 @@
 use super::{InterpolatedKind, Keyword, Kind, Operator, Parsed, Parser, TokenKind};
 use bstr::ByteSlice;
+use std::borrow::Cow;
 
 impl Parser<'_> {
     pub(super) fn expression(&mut self, minimum: u8) -> Parsed {
@@ -296,7 +297,17 @@ fn priority(token: TokenKind) -> Option<(u8, u8)> {
 }
 
 fn number(bytes: &[u8]) -> bool {
-    let normalized: Vec<_> = bytes.iter().copied().filter(|byte| *byte != b'_').collect();
+    let normalized = if bytes.contains(&b'_') {
+        Cow::Owned(
+            bytes
+                .iter()
+                .copied()
+                .filter(|byte| *byte != b'_')
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        Cow::Borrowed(bytes)
+    };
     let Ok(text) = std::str::from_utf8(&normalized) else {
         return false;
     };

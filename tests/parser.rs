@@ -422,6 +422,51 @@ fn types_are_structured() {
 }
 
 #[test]
+fn numeric_literals() {
+    for literal in [
+        "123",
+        "1_2_3",
+        "1.25",
+        "1_2.5_0",
+        "1e+3",
+        "1_e+3",
+        "0xff",
+        "0x_f_f",
+        "0b1010",
+        "0b_10_10",
+        "123i",
+        "1_2_3i",
+        "0xffffffffffffffffi",
+        "0x_ffff_ffff_ffff_ffffi",
+        "0b1010i",
+        "0b_10_10i",
+    ] {
+        accepted(&format!("return {literal}"));
+    }
+
+    for literal in [
+        "1e",
+        "1_e",
+        "0xg",
+        "0x_g",
+        "0b2",
+        "0b_2",
+        "1.0i",
+        "1_._0i",
+        "9223372036854775808i",
+        "9_223_372_036_854_775_808i",
+        "0x10000000000000000i",
+        "0x1_0000_0000_0000_0000i",
+    ] {
+        let source = format!("return {literal}");
+        assert!(
+            !check(source.as_bytes()).diagnostics.is_empty(),
+            "accepted {literal}"
+        );
+    }
+}
+
+#[test]
 fn malformed_syntax() {
     for source in [
         ";",
