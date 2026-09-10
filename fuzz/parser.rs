@@ -18,12 +18,16 @@ fuzz_target!(|source: &[u8]| {
     assert_eq!(tree.text(tree.root), source);
 
     let mut parents = vec![0; tree.nodes.len()];
+    let mut end = 0;
 
     for (index, node) in tree.nodes.iter().enumerate() {
         assert!(node.span.start <= node.span.end && node.span.end <= source.len());
+        assert_eq!(node.children.start, end);
+        assert!(node.children.end <= tree.children.len());
+        end = node.children.end;
         let mut end = node.span.start;
 
-        for child in &node.children {
+        for child in &tree.children[node.children.clone()] {
             assert!(*child < index);
             let span = tree.nodes[*child].span;
             assert!(span.start >= end && span.end <= node.span.end);
@@ -32,6 +36,7 @@ fuzz_target!(|source: &[u8]| {
         }
     }
 
+    assert_eq!(end, tree.children.len());
     assert!(parents.iter().enumerate().all(|(index, count)| *count == usize::from(index != tree.root)));
 
     for diagnostic in &tree.diagnostics {

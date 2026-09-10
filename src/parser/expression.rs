@@ -14,7 +14,7 @@ impl Parser<'_> {
             TokenKind::Byte(b'-' | b'#') | TokenKind::Keyword(Keyword::Not) => {
                 let operator = self.leaf(Kind::Operator);
                 let operand = self.expression(8)?;
-                self.node(Kind::Unary, start, vec![operator, operand])
+                self.node(Kind::Unary, start, [operator, operand])
             }
 
             TokenKind::Number => {
@@ -54,7 +54,7 @@ impl Parser<'_> {
             && self.consume(TokenKind::Operator(Operator::DoubleColon))
         {
             let annotation = self.annotation()?;
-            left = self.node(Kind::Assertion, start, vec![left, annotation]);
+            left = self.node(Kind::Assertion, start, [left, annotation]);
         }
 
         while let Some((priority, right)) = priority(self.current().kind) {
@@ -64,7 +64,7 @@ impl Parser<'_> {
 
             let operator = self.leaf(Kind::Operator);
             let operand = self.expression(right)?;
-            left = self.node(Kind::Binary, start, vec![left, operator, operand]);
+            left = self.node(Kind::Binary, start, [left, operator, operand]);
         }
 
         Ok(left)
@@ -75,7 +75,7 @@ impl Parser<'_> {
         let mut left = if self.consume(TokenKind::Byte(b'(')) {
             let inner = self.expression(0)?;
             self.expect(TokenKind::Byte(b')'), "expected closing expression")?;
-            self.node(Kind::Group, start, vec![inner])
+            self.node(Kind::Group, start, [inner])
         } else {
             self.name()?
         };
@@ -85,41 +85,46 @@ impl Parser<'_> {
                 TokenKind::Byte(b'.') => {
                     self.take();
                     let name = self.name()?;
-                    self.node(Kind::Field, start, vec![left, name])
+                    self.node(Kind::Field, start, [left, name])
                 }
 
                 TokenKind::Byte(b'[') => {
                     self.take();
                     let index = self.expression(0)?;
                     self.expect(TokenKind::Byte(b']'), "expected closing index")?;
-                    self.node(Kind::Index, start, vec![left, index])
+                    self.node(Kind::Index, start, [left, index])
                 }
 
                 TokenKind::Byte(b':') => {
                     self.take();
                     let method = self.name()?;
-                    let mut children = vec![left, method];
-
-                    if self.byte(b'<') && self.next() == TokenKind::Byte(b'<') {
+                    let types = if self.byte(b'<') && self.next() == TokenKind::Byte(b'<') {
                         self.take();
-                        children.push(self.type_arguments()?);
+                        let types = self.type_arguments()?;
                         self.expect(TokenKind::Byte(b'>'), "expected closing instantiation")?;
-                    }
+                        Some(types)
+                    } else {
+                        None
+                    };
+                    let arguments = self.arguments()?;
 
-                    children.push(self.arguments()?);
-                    self.node(Kind::MethodCall, start, children)
+                    self.node(
+                        Kind::MethodCall,
+                        start,
+                        [left, method].into_iter().chain(types).chain([arguments]),
+                    )
                 }
 
                 TokenKind::Byte(b'(' | b'{') | TokenKind::QuotedString | TokenKind::RawString => {
                     let arguments = self.arguments()?;
-                    self.node(Kind::Call, start, vec![left, arguments])
+                    self.node(Kind::Call, start, [left, arguments])
                 }
 
                 TokenKind::Byte(b'<') if self.next() == TokenKind::Byte(b'<') => {
                     self.take();
                     let arguments = self.type_arguments()?;
                     self.expect(TokenKind::Byte(b'>'), "expected closing instantiation")?;
-                    self.node(Kind::Instantiate, start, vec![left, arguments])
+                    self.node(Kind::Instantiate, start, [left, arguments])
                 }
 
                 _ => break,
@@ -166,7 +171,7 @@ impl Parser<'_> {
             self.expression(0)?
         };
 
-        Ok(self.node(Kind::Conditional, start, vec![condition, truthy, falsy]))
+        Ok(self.node(Kind::Conditional, start, [condition, truthy, falsy]))
     }
 
     fn table(&mut self) -> Parsed {
@@ -175,19 +180,21 @@ impl Parser<'_> {
 
         while !self.byte(b'}') {
             let begin = self.current().span.start;
-            let mut children = Vec::new();
-
-            if self.consume(TokenKind::Byte(b'[')) {
-                children.push(self.expression(0)?);
+            let key = if self.consume(TokenKind::Byte(b'[')) {
+                let key = self.expression(0)?;
                 self.expect(TokenKind::Byte(b']'), "expected closing field key")?;
                 self.expect(TokenKind::Byte(b'='), "expected field value")?;
+                Some(key)
             } else if self.at(TokenKind::Name) && self.next() == TokenKind::Byte(b'=') {
-                children.push(self.name()?);
+                let key = self.name()?;
                 self.take();
-            }
+                Some(key)
+            } else {
+                None
+            };
+            let value = self.expression(0)?;
 
-            children.push(self.expression(0)?);
-            fields.push(self.node(Kind::TableField, begin, children));
+            fields.push(self.node(Kind::TableField, begin, key.into_iter().chain([value])));
 
             if !self.consume(TokenKind::Byte(b',')) && !self.consume(TokenKind::Byte(b';')) {
                 break;

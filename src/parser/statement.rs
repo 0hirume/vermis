@@ -10,7 +10,7 @@ impl Parser<'_> {
 
                 if self.named(b"declare") && self.next() == TokenKind::Keyword(Keyword::Function) {
                     let declaration = self.declaration()?;
-                    self.tree.nodes[declaration].children.insert(0, attributes);
+                    self.prepend(declaration, attributes);
                     self.tree.nodes[declaration].span.start = start;
                     return Ok(declaration);
                 }
@@ -62,7 +62,7 @@ impl Parser<'_> {
                 self.expect(TokenKind::Keyword(Keyword::Do), "expected do")?;
                 let body = self.block(&[Keyword::End]);
                 self.close(Keyword::End);
-                Ok(self.node(Kind::While, start, vec![condition, body]))
+                Ok(self.node(Kind::While, start, [condition, body]))
             }
 
             TokenKind::Keyword(Keyword::Repeat) => {
@@ -70,14 +70,14 @@ impl Parser<'_> {
                 let body = self.block(&[Keyword::Until]);
                 self.expect(TokenKind::Keyword(Keyword::Until), "expected until")?;
                 let condition = self.expression(0)?;
-                Ok(self.node(Kind::Repeat, start, vec![body, condition]))
+                Ok(self.node(Kind::Repeat, start, [body, condition]))
             }
 
             TokenKind::Keyword(Keyword::Do) => {
                 self.take();
                 let body = self.block(&[Keyword::End]);
                 self.close(Keyword::End);
-                Ok(self.node(Kind::Do, start, vec![body]))
+                Ok(self.node(Kind::Do, start, [body]))
             }
 
             TokenKind::Keyword(Keyword::For) => self.for_statement(),
@@ -235,6 +235,16 @@ impl Parser<'_> {
     fn assignment(&mut self) -> Parsed {
         let start = self.current().span.start;
         let first = self.primary()?;
+
+        if matches!(self.tree.nodes[first].kind, Kind::Call | Kind::MethodCall)
+            && !matches!(
+                self.current().kind,
+                TokenKind::Byte(b',' | b'=') | TokenKind::Operator(_)
+            )
+        {
+            return Ok(self.node(Kind::CallStatement, start, [first]));
+        }
+
         let mut targets = vec![first];
 
         while self.consume(TokenKind::Byte(b',')) {
@@ -313,7 +323,7 @@ impl Parser<'_> {
                         Kind::Local
                     },
                     begin,
-                    vec![binding, value],
+                    [binding, value],
                 )
             } else {
                 self.expression(0)?
@@ -321,7 +331,7 @@ impl Parser<'_> {
 
             self.expect(TokenKind::Keyword(Keyword::Then), "expected then")?;
             let body = self.block(&[Keyword::ElseIf, Keyword::Else, Keyword::End]);
-            branches.push(self.node(Kind::Branch, begin, vec![condition, body]));
+            branches.push(self.node(Kind::Branch, begin, [condition, body]));
 
             if !self.keyword(Keyword::ElseIf) {
                 break;
@@ -331,7 +341,7 @@ impl Parser<'_> {
         if self.keyword(Keyword::Else) {
             let begin = self.take().span.start;
             let body = self.block(&[Keyword::End]);
-            branches.push(self.node(Kind::Else, begin, vec![body]));
+            branches.push(self.node(Kind::Else, begin, [body]));
         }
 
         self.close(Keyword::End);
@@ -441,7 +451,7 @@ impl Parser<'_> {
         if self.consume(TokenKind::Byte(b':')) {
             let begin = self.current().span.start;
             let returns = self.type_argument()?;
-            children.push(self.node(Kind::Returns, begin, vec![returns]));
+            children.push(self.node(Kind::Returns, begin, [returns]));
         }
 
         Ok(children)
@@ -475,7 +485,7 @@ impl Parser<'_> {
                 return Err(self.error("expected extern type"));
             }
             let class = self.class(true)?;
-            return Ok(self.node(Kind::Declaration, start, vec![class]));
+            return Ok(self.node(Kind::Declaration, start, [class]));
         }
 
         let function = self.consume(TokenKind::Keyword(Keyword::Function));
@@ -503,15 +513,15 @@ impl Parser<'_> {
             if !external {
                 if self.consume(TokenKind::Byte(b'.')) {
                     let name = self.name()?;
-                    reference = self.node(Kind::Field, reference_start, vec![reference, name]);
+                    reference = self.node(Kind::Field, reference_start, [reference, name]);
                 } else if self.consume(TokenKind::Byte(b'[')) {
                     let index = self.expression(0)?;
                     self.expect(TokenKind::Byte(b']'), "expected closing superclass index")?;
-                    reference = self.node(Kind::Index, reference_start, vec![reference, index]);
+                    reference = self.node(Kind::Index, reference_start, [reference, index]);
                 }
             }
 
-            children.push(self.node(Kind::Extends, begin, vec![reference]));
+            children.push(self.node(Kind::Extends, begin, [reference]));
         }
 
         if external {
@@ -560,7 +570,7 @@ impl Parser<'_> {
                     self.type_field(false)?
                 } else {
                     let binding = self.binding()?;
-                    self.node(Kind::Property, begin, vec![binding])
+                    self.node(Kind::Property, begin, [binding])
                 });
             } else {
                 return Err(self.error("expected class member"));

@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use bstr::BStr;
 
 use crate::{Span, Token};
@@ -92,7 +94,7 @@ pub enum Kind {
 pub struct Node {
     pub kind: Kind,
     pub span: Span,
-    pub children: Vec<usize>,
+    pub children: Range<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -106,6 +108,7 @@ pub struct Tree<'source> {
     pub source: &'source BStr,
     pub tokens: Vec<Token>,
     pub nodes: Vec<Node>,
+    pub children: Vec<usize>,
     pub root: usize,
     pub diagnostics: Vec<Diagnostic>,
 }

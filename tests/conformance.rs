@@ -35,7 +35,7 @@ fn upstream_programs() {
         assert_eq!(tree.text(tree.root), source.as_slice());
 
         for node in &tree.nodes {
-            for child in &node.children {
+            for child in &tree.children[node.children.clone()] {
                 let span = tree.nodes[*child].span;
                 assert!(
                     node.span.start <= span.start && span.end <= node.span.end,

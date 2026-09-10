@@ -24,6 +24,7 @@ pub fn parse(source: &BStr) -> Tree<'_> {
             source,
             tokens: tokenize(source),
             nodes: Vec::new(),
+            children: Vec::new(),
             root: 0,
             diagnostics: Vec::new(),
         },
@@ -36,7 +37,7 @@ pub fn parse(source: &BStr) -> Tree<'_> {
     let block = parser.block(&[]);
 
     parser.end = source.len();
-    parser.tree.root = parser.node(Kind::Root, 0, vec![block]);
+    parser.tree.root = parser.node(Kind::Root, 0, [block]);
 
     parser.tree
 }
@@ -126,15 +127,23 @@ impl Parser<'_> {
         }
     }
 
-    fn node(&mut self, kind: Kind, start: usize, children: Vec<usize>) -> usize {
+    fn node(
+        &mut self,
+        kind: Kind,
+        start: usize,
+        children: impl IntoIterator<Item = usize>,
+    ) -> usize {
         let index = self.tree.nodes.len();
+        let begin = self.tree.children.len();
+        self.tree.children.extend(children);
+        let children = begin..self.tree.children.len();
 
         self.tree.nodes.push(Node {
             kind,
             span: Span {
                 start,
                 end: self.end.max(start).max(
-                    children
+                    self.tree.children[children.clone()]
                         .last()
                         .map_or(start, |child| self.tree.nodes[*child].span.end),
                 ),
@@ -145,9 +154,16 @@ impl Parser<'_> {
         index
     }
 
+    fn prepend(&mut self, node: usize, child: usize) {
+        let children = &mut self.tree.nodes[node].children;
+        assert_eq!(children.end, self.tree.children.len());
+        self.tree.children.insert(children.start, child);
+        children.end += 1;
+    }
+
     fn leaf(&mut self, kind: Kind) -> usize {
         let token = self.take();
-        self.node(kind, token.span.start, Vec::new())
+        self.node(kind, token.span.start, [])
     }
 
     fn name(&mut self) -> Parsed {
@@ -188,6 +204,7 @@ impl Parser<'_> {
 
             let cursor = self.cursor;
             let checkpoint = self.tree.nodes.len();
+            let child_checkpoint = self.tree.children.len();
             let begin = self.current().span.start;
 
             match self.nested(Self::statement) {
@@ -197,9 +214,10 @@ impl Parser<'_> {
                 }
                 Err(error) => {
                     self.tree.nodes.truncate(checkpoint);
+                    self.tree.children.truncate(child_checkpoint);
                     self.tree.diagnostics.push(error);
                     self.recover(cursor, stops);
-                    statements.push(self.node(Kind::Error, begin, Vec::new()));
+                    statements.push(self.node(Kind::Error, begin, []));
                 }
             }
         }
@@ -247,13 +265,14 @@ impl Parser<'_> {
 
     fn binding(&mut self) -> Parsed {
         let start = self.current().span.start;
-        let mut children = vec![self.name()?];
+        let name = self.name()?;
+        let annotation = if self.consume(TokenKind::Byte(b':')) {
+            Some(self.annotation()?)
+        } else {
+            None
+        };
 
-        if self.consume(TokenKind::Byte(b':')) {
-            children.push(self.annotation()?);
-        }
-
-        Ok(self.node(Kind::Binding, start, children))
+        Ok(self.node(Kind::Binding, start, [name].into_iter().chain(annotation)))
     }
 
     fn expressions(&mut self) -> Result<Vec<usize>, Diagnostic> {
