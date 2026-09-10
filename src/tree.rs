@@ -85,7 +85,7 @@ pub enum Kind {
     TypeUnion,
     TypeIntersection,
     TypeOptional,
-    Typeof,
+    TypeOf,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

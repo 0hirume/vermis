@@ -140,7 +140,7 @@ impl Parser<'_> {
                     self.expect(TokenKind::Byte(b'('), "expected typeof expression")?;
                     children.push(self.expression(0)?);
                     self.expect(TokenKind::Byte(b')'), "expected closing typeof")?;
-                    return Ok(self.node(Kind::Typeof, start, children));
+                    return Ok(self.node(Kind::TypeOf, start, children));
                 }
 
                 if self.consume(TokenKind::Byte(b'.')) {
