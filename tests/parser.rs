@@ -572,7 +572,7 @@ fn nesting_boundary() {
 #[test]
 fn recovery_and_bytes() {
     let tree = check(b"local broken = )\nlocal valid = '\xff' -- comment\nreturn valid");
-    assert!(!tree.diagnostics.is_empty());
+    assert_ne!(tree.diagnostics, []);
 
     assert!(
         tree.nodes.iter().any(|node| node.kind == Kind::Local
@@ -598,7 +598,7 @@ fn recovery_and_bytes() {
     }
 
     let deep = format!("return {}value{}", "(".repeat(1000), ")".repeat(1000));
-    assert!(!check(deep.as_bytes()).diagnostics.is_empty());
+    assert_ne!(check(deep.as_bytes()).diagnostics, []);
 
     for source in [
         format!("{}{}", "do ".repeat(1001), "end ".repeat(1001)),
@@ -614,7 +614,7 @@ fn recovery_and_bytes() {
             " end".repeat(1000)
         ),
     ] {
-        assert!(!check(source.as_bytes()).diagnostics.is_empty());
+        assert_ne!(check(source.as_bytes()).diagnostics, []);
     }
 
     accepted(&format!("return value{}", ".field".repeat(1000)));

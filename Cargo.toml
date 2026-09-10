@@ -2,6 +2,9 @@
 name = "vermis"
 version = "0.1.0"
 edition = "2024"
+description = "A lossless Luau parser for formatting, linting, and source analysis"
+keywords = ["luau", "parser", "syntax"]
+categories = ["parsing", "development-tools"]
 repository = "https://github.com/0hirume/vermis"
 license = "MIT"
 
