@@ -165,6 +165,7 @@ fn check(source: &[u8], expected: &[(TokenKind, &[u8])]) {
 #[test]
 fn empty_and_whitespace() {
     check(b"", &[]);
+
     check(
         b" \t\r\n\x0b\x0c",
         &[(TokenKind::Whitespace, b" \t\r\n\x0b\x0c")],
@@ -182,15 +183,19 @@ fn malformed_delimiters() {
     );
 
     check(b"--[=x", &[(TokenKind::Comment, b"--[=x")]);
+
     check(
         b"--[[",
         &[(TokenKind::Error(LexError::BrokenComment), b"--[[")],
     );
+
     check(
         b"[=[x]]",
         &[(TokenKind::Error(LexError::BrokenString), b"[=[x]]")],
     );
+
     check(b"[=[x]]=]", &[(TokenKind::RawString, b"[=[x]]=]")]);
+
     check(
         b"[x]",
         &[
@@ -288,6 +293,7 @@ fn broken_braces_have_separate_diagnostic_span() {
         token.kind,
         TokenKind::Error(LexError::BrokenInterpolatedDoubleBrace)
     );
+
     assert_eq!(token.bytes(source), BStr::new(b"`{{"));
     assert_eq!(token.diagnostic_span().bytes(source), BStr::new(b"`"));
 }

@@ -12,6 +12,7 @@ impl Parser<'_> {
                     let declaration = self.declaration()?;
                     self.prepend(declaration, attributes);
                     self.tree.nodes[declaration].span.start = start;
+
                     return Ok(declaration);
                 }
 
@@ -49,19 +50,23 @@ impl Parser<'_> {
             }
 
             TokenKind::Keyword(Keyword::Local) => self.local(false),
+
             TokenKind::Keyword(Keyword::Function) => {
                 self.take();
                 let name = self.function_name()?;
+
                 self.function(start, Kind::Function, vec![name])
             }
 
             TokenKind::Keyword(Keyword::If) => self.conditional(),
+
             TokenKind::Keyword(Keyword::While) => {
                 self.take();
                 let condition = self.expression(0)?;
                 self.expect(TokenKind::Keyword(Keyword::Do), "expected do")?;
                 let body = self.block(&[Keyword::End]);
                 self.close(Keyword::End);
+
                 Ok(self.node(Kind::While, start, [condition, body]))
             }
 
@@ -70,6 +75,7 @@ impl Parser<'_> {
                 let body = self.block(&[Keyword::Until]);
                 self.expect(TokenKind::Keyword(Keyword::Until), "expected until")?;
                 let condition = self.expression(0)?;
+
                 Ok(self.node(Kind::Repeat, start, [body, condition]))
             }
 
@@ -77,17 +83,21 @@ impl Parser<'_> {
                 self.take();
                 let body = self.block(&[Keyword::End]);
                 self.close(Keyword::End);
+
                 Ok(self.node(Kind::Do, start, [body]))
             }
 
             TokenKind::Keyword(Keyword::For) => self.for_statement(),
+
             TokenKind::Keyword(Keyword::Return) => {
                 self.take();
+
                 let values = if self.block_end() || self.byte(b';') {
                     Vec::new()
                 } else {
                     self.expressions()?
                 };
+
                 Ok(self.node(Kind::Return, start, values))
             }
 
@@ -127,11 +137,14 @@ impl Parser<'_> {
 
             TokenKind::Name if self.named(b"open") && self.next() == TokenKind::Name => {
                 self.take();
+
                 if !self.named(b"class") {
                     return Err(self.error("expected class after open"));
                 }
+
                 let class = self.class(false)?;
                 self.tree.nodes[class].span.start = start;
+
                 Ok(class)
             }
 
@@ -167,6 +180,7 @@ impl Parser<'_> {
             {
                 Ok(self.leaf(Kind::Continue))
             }
+
             _ => self.assignment(),
         }
     }
@@ -177,6 +191,7 @@ impl Parser<'_> {
 
         let statement = if self.consume(TokenKind::Keyword(Keyword::Function)) {
             let name = self.name()?;
+
             self.function(begin, Kind::Function, vec![name])?
         } else {
             if !children.is_empty() {
@@ -199,6 +214,7 @@ impl Parser<'_> {
         }
 
         children.push(statement);
+
         Ok(self.node(Kind::Export, start, children))
     }
 
@@ -207,10 +223,12 @@ impl Parser<'_> {
 
         if self.consume(TokenKind::Keyword(Keyword::Function)) {
             let name = self.name()?;
+
             return self.function(start, Kind::LocalFunction, vec![name]);
         }
 
         let mut children = vec![self.binding()?];
+
         while self.consume(TokenKind::Byte(b',')) {
             children.push(self.binding()?);
         }
@@ -280,6 +298,7 @@ impl Parser<'_> {
             }
 
             targets.push(self.leaf(Kind::Operator));
+
             if compound {
                 targets.push(self.expression(0)?);
             } else {
@@ -310,12 +329,14 @@ impl Parser<'_> {
 
         loop {
             let begin = self.take().span.start;
+
             let condition = if self.keyword(Keyword::Local) || self.named(b"const") {
                 let constant = self.named(b"const");
                 let begin = self.take().span.start;
                 let binding = self.binding()?;
                 self.expect(TokenKind::Byte(b'='), "expected condition initializer")?;
                 let value = self.expression(0)?;
+
                 self.node(
                     if constant {
                         Kind::Constant
@@ -358,6 +379,7 @@ impl Parser<'_> {
             children.push(self.expression(0)?);
             self.expect(TokenKind::Byte(b','), "expected range separator")?;
             children.push(self.expression(0)?);
+
             if self.consume(TokenKind::Byte(b',')) {
                 children.push(self.expression(0)?);
             }
@@ -365,6 +387,7 @@ impl Parser<'_> {
             while self.consume(TokenKind::Byte(b',')) {
                 children.push(self.binding()?);
             }
+
             self.expect(TokenKind::Keyword(Keyword::In), "expected in")?;
             children.extend(self.expressions()?);
         }
@@ -387,6 +410,7 @@ impl Parser<'_> {
     fn function_name(&mut self) -> Parsed {
         let start = self.current().span.start;
         let mut children = vec![self.name()?];
+
         while self.consume(TokenKind::Byte(b'.')) {
             children.push(self.name()?);
         }
@@ -439,6 +463,7 @@ impl Parser<'_> {
                 }
 
                 parameters.push(self.binding()?);
+
                 if !self.consume(TokenKind::Byte(b',')) {
                     break;
                 }
@@ -462,10 +487,12 @@ impl Parser<'_> {
 
         if self.consume(TokenKind::Keyword(Keyword::Function)) {
             let name = self.name()?;
+
             return self.function(start, Kind::TypeFunction, vec![name]);
         }
 
         let mut children = vec![self.name()?];
+
         if self.byte(b'<') {
             children.push(self.generics(true)?);
         }
@@ -481,10 +508,13 @@ impl Parser<'_> {
 
         if self.named(b"extern") {
             self.take();
+
             if !self.named(b"type") {
                 return Err(self.error("expected extern type"));
             }
+
             let class = self.class(true)?;
+
             return Ok(self.node(Kind::Declaration, start, [class]));
         }
 
@@ -528,11 +558,13 @@ impl Parser<'_> {
             if !self.named(b"with") {
                 return Err(self.error("expected with"));
             }
+
             self.take();
         }
 
         while !self.block_end() {
             let begin = self.current().span.start;
+
             let attributes = if external
                 && matches!(
                     self.current().kind,
@@ -542,6 +574,7 @@ impl Parser<'_> {
             } else {
                 None
             };
+
             let public = !external && self.named(b"public");
 
             if public {
@@ -550,6 +583,7 @@ impl Parser<'_> {
 
             if self.consume(TokenKind::Keyword(Keyword::Function)) {
                 let name = self.name()?;
+
                 let method = if external {
                     if !self.byte(b'(') {
                         return Err(self.error("expected method parameters"));
@@ -558,10 +592,12 @@ impl Parser<'_> {
                     let mut parts: Vec<_> = attributes.into_iter().collect();
                     parts.push(name);
                     let parts = self.signature(parts)?;
+
                     self.node(Kind::Method, begin, parts)
                 } else {
                     self.function(begin, Kind::Method, vec![name])?
                 };
+
                 children.push(method);
             } else if attributes.is_some() {
                 return Err(self.error("expected method after attributes"));
@@ -570,6 +606,7 @@ impl Parser<'_> {
                     self.type_field(false)?
                 } else {
                     let binding = self.binding()?;
+
                     self.node(Kind::Property, begin, [binding])
                 });
             } else {

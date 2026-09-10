@@ -70,6 +70,7 @@ impl<'source> Lexer<'source> {
 
             byte => {
                 self.advance();
+
                 TokenKind::Byte(byte)
             }
         }
@@ -89,12 +90,16 @@ impl<'source> Lexer<'source> {
         match self.current() {
             Some(b'>') => {
                 self.advance();
+
                 TokenKind::Operator(Operator::Arrow)
             }
+
             Some(b'=') => {
                 self.advance();
+
                 TokenKind::Operator(Operator::SubtractAssign)
             }
+
             Some(b'-') => self.comment(),
             _ => TokenKind::Byte(b'-'),
         }
@@ -107,6 +112,7 @@ impl<'source> Lexer<'source> {
             && let Separator::Valid(depth) = self.long_separator()
         {
             self.advance();
+
             return self.long_body(depth, TokenKind::BlockComment, LexError::BrokenComment);
         }
 
@@ -121,8 +127,10 @@ impl<'source> Lexer<'source> {
         match self.long_separator() {
             Separator::Valid(depth) => {
                 self.advance();
+
                 self.long_body(depth, TokenKind::RawString, LexError::BrokenString)
             }
+
             Separator::Malformed(0) => TokenKind::Byte(b'['),
             Separator::Malformed(_) => TokenKind::Error(LexError::BrokenString),
         }
@@ -132,6 +140,7 @@ impl<'source> Lexer<'source> {
         let bracket = self
             .current()
             .expect("long separator starts with a bracket");
+
         self.advance();
 
         let mut depth = 0;
@@ -152,12 +161,15 @@ impl<'source> Lexer<'source> {
         loop {
             match self.current() {
                 None | Some(0) => return TokenKind::Error(broken),
+
                 Some(b']') => {
                     if self.long_separator() == Separator::Valid(depth) {
                         self.advance();
+
                         return complete;
                     }
                 }
+
                 Some(_) => self.advance(),
             }
         }
@@ -180,6 +192,7 @@ impl<'source> Lexer<'source> {
             Some(BraceKind::Interpolated) => {
                 self.interpolated_section(InterpolatedKind::Middle, InterpolatedKind::End)
             }
+
             Some(BraceKind::Normal) | None => TokenKind::Byte(b'}'),
         }
     }
@@ -189,6 +202,7 @@ impl<'source> Lexer<'source> {
 
         if self.current() == Some(b'=') {
             self.advance();
+
             TokenKind::Operator(Operator::Equal)
         } else {
             TokenKind::Byte(b'=')
@@ -200,6 +214,7 @@ impl<'source> Lexer<'source> {
 
         if self.current() == Some(b'=') {
             self.advance();
+
             TokenKind::Operator(Operator::LessEqual)
         } else {
             TokenKind::Byte(b'<')
@@ -211,6 +226,7 @@ impl<'source> Lexer<'source> {
 
         if self.current() == Some(b'=') {
             self.advance();
+
             TokenKind::Operator(Operator::GreaterEqual)
         } else {
             TokenKind::Byte(b'>')
@@ -222,6 +238,7 @@ impl<'source> Lexer<'source> {
 
         if self.current() == Some(b'=') {
             self.advance();
+
             TokenKind::Operator(Operator::NotEqual)
         } else {
             TokenKind::Byte(b'~')
@@ -237,10 +254,13 @@ impl<'source> Lexer<'source> {
                 None | Some(0 | b'\r' | b'\n') => {
                     return TokenKind::Error(LexError::BrokenString);
                 }
+
                 Some(byte) if byte == delimiter => {
                     self.advance();
+
                     return TokenKind::QuotedString;
                 }
+
                 Some(b'\\') => self.backslash(),
                 Some(_) => self.advance(),
             }
@@ -258,7 +278,9 @@ impl<'source> Lexer<'source> {
                     self.advance();
                 }
             }
+
             None | Some(0) => {}
+
             Some(b'z') => {
                 self.advance();
 
@@ -266,12 +288,14 @@ impl<'source> Lexer<'source> {
                     self.advance();
                 }
             }
+
             Some(_) => self.advance(),
         }
     }
 
     fn interpolated_string(&mut self) -> TokenKind {
         self.advance();
+
         self.interpolated_section(InterpolatedKind::Begin, InterpolatedKind::Simple)
     }
 
@@ -285,28 +309,36 @@ impl<'source> Lexer<'source> {
                 None | Some(0 | b'\r' | b'\n') => {
                     return TokenKind::Error(LexError::BrokenString);
                 }
+
                 Some(b'\\') if self.peek(1) == Some(b'u') && self.peek(2) == Some(b'{') => {
                     self.advance();
                     self.advance();
                     self.advance();
                 }
+
                 Some(b'\\') => self.backslash(),
+
                 Some(b'{') => {
                     self.braces.push(BraceKind::Interpolated);
 
                     if self.peek(1) == Some(b'{') {
                         self.advance();
                         self.advance();
+
                         return TokenKind::Error(LexError::BrokenInterpolatedDoubleBrace);
                     }
 
                     self.advance();
+
                     return TokenKind::Interpolated(expression);
                 }
+
                 Some(b'`') => {
                     self.advance();
+
                     return TokenKind::Interpolated(complete);
                 }
+
                 Some(_) => self.advance(),
             }
         }
@@ -321,12 +353,16 @@ impl<'source> Lexer<'source> {
             return match self.current() {
                 Some(b'.') => {
                     self.advance();
+
                     TokenKind::Operator(Operator::Ellipsis)
                 }
+
                 Some(b'=') => {
                     self.advance();
+
                     TokenKind::Operator(Operator::ConcatAssign)
                 }
+
                 _ => TokenKind::Operator(Operator::Concat),
             };
         }
@@ -348,18 +384,22 @@ impl<'source> Lexer<'source> {
         match self.current() {
             Some(b'=') => {
                 self.advance();
+
                 TokenKind::Operator(Operator::DivideAssign)
             }
+
             Some(b'/') => {
                 self.advance();
 
                 if self.current() == Some(b'=') {
                     self.advance();
+
                     TokenKind::Operator(Operator::FloorDivideAssign)
                 } else {
                     TokenKind::Operator(Operator::FloorDivide)
                 }
             }
+
             _ => TokenKind::Byte(b'/'),
         }
     }
@@ -381,6 +421,7 @@ impl<'source> Lexer<'source> {
 
         if self.current() == Some(b'=') {
             self.advance();
+
             TokenKind::Operator(operator)
         } else {
             TokenKind::Byte(byte)
@@ -392,6 +433,7 @@ impl<'source> Lexer<'source> {
 
         if self.current() == Some(b':') {
             self.advance();
+
             TokenKind::Operator(Operator::DoubleColon)
         } else {
             TokenKind::Byte(b':')
@@ -403,6 +445,7 @@ impl<'source> Lexer<'source> {
 
         if self.current() == Some(b'[') {
             self.advance();
+
             return TokenKind::AttributeOpen;
         }
 
@@ -462,6 +505,7 @@ impl<'source> Lexer<'source> {
             (4, first & 0b0000_0111)
         } else {
             self.advance();
+
             return TokenKind::Error(LexError::BrokenUnicode { codepoint: 0 });
         };
 
@@ -496,8 +540,10 @@ impl Iterator for Lexer<'_> {
         }
 
         let start = self.cursor;
+
         let kind = if self.cursor == self.source.len() {
             self.finished = true;
+
             TokenKind::Eof
         } else {
             self.scan()

@@ -9,12 +9,14 @@ fn check(source: &[u8]) -> Tree<'_> {
         assert_eq!(view.index(), index);
         assert_eq!(view.span(), tree.nodes[index].span);
         assert_eq!(view.text(), tree.text(index));
+
         assert!(
             view.parts().is_some(),
             "{:?}: {:?}",
             view.kind(),
             view.text()
         );
+
         assert_eq!(
             view.children().map(View::index).collect::<Vec<_>>(),
             tree.children[tree.nodes[index].children.clone()]
@@ -42,9 +44,11 @@ fn named_statements_and_expressions() {
     let Parts::Root { block } = tree.root_view().unwrap().parts().unwrap() else {
         panic!()
     };
+
     let Parts::Block { mut statements } = block.parts().unwrap() else {
         panic!()
     };
+
     let Parts::Export {
         attributes,
         declaration,
@@ -52,6 +56,7 @@ fn named_statements_and_expressions() {
     else {
         panic!()
     };
+
     assert_eq!(attributes.unwrap().text(), b"@native");
     assert!(statements.next().is_none());
 
@@ -66,6 +71,7 @@ fn named_statements_and_expressions() {
     else {
         panic!()
     };
+
     assert_eq!(name.unwrap().text(), b"identity");
     assert_eq!(generics.unwrap().text(), b"<T>");
     assert_eq!(parameters.text(), b"(value: T)");
@@ -79,11 +85,14 @@ fn named_statements_and_expressions() {
     else {
         panic!()
     };
+
     let Parts::Binding { name, annotation } = bindings.next().unwrap().parts().unwrap() else {
         panic!()
     };
+
     assert_eq!(name.text(), b"copy");
     assert!(annotation.is_none());
+
     let Parts::Binary {
         left,
         operator,
@@ -92,6 +101,7 @@ fn named_statements_and_expressions() {
     else {
         panic!()
     };
+
     assert_eq!(left.text(), b"value");
     assert_eq!(operator.text(), b"+");
     assert_eq!(right.text(), b"1");
@@ -105,6 +115,7 @@ fn named_statements_and_expressions() {
     else {
         panic!()
     };
+
     assert_eq!(targets.next().unwrap().text(), b"copy");
     assert_eq!(operator.text(), b"+=");
     assert_eq!(values.next().unwrap().text(), b"2");
@@ -123,8 +134,10 @@ fn named_types_and_calls() {
     else {
         panic!()
     };
+
     assert_eq!(name.text(), b"Result");
     assert_eq!(generics.unwrap().children().count(), 2);
+
     let Parts::TypeTable {
         access,
         element,
@@ -133,7 +146,9 @@ fn named_types_and_calls() {
     else {
         panic!()
     };
+
     assert!(access.is_none() && element.is_none());
+
     let Parts::TypeField {
         access,
         key,
@@ -142,16 +157,20 @@ fn named_types_and_calls() {
     else {
         panic!()
     };
+
     assert_eq!(access.unwrap().text(), b"read");
     assert_eq!(key.text(), b"value");
+
     let Parts::TypeOptional { annotation } = annotation.parts().unwrap() else {
         panic!()
     };
+
     assert_eq!(annotation.text(), b"T");
 
     let Parts::TypeField { annotation, .. } = fields.next().unwrap().parts().unwrap() else {
         panic!()
     };
+
     let Parts::TypeFunction {
         parameters,
         returns,
@@ -160,6 +179,7 @@ fn named_types_and_calls() {
     else {
         panic!()
     };
+
     assert_eq!(parameters.text(), b"(T)");
     assert_eq!(returns.text(), b"(T, Values...)");
 
@@ -172,10 +192,12 @@ fn named_types_and_calls() {
     else {
         panic!()
     };
+
     assert_eq!(receiver.text(), b"object");
     assert_eq!(method.text(), b"method");
     assert_eq!(arguments.text(), b"(1)");
     let reference = types.unwrap().children().next().unwrap();
+
     let Parts::TypeName {
         namespace,
         name,
@@ -184,6 +206,7 @@ fn named_types_and_calls() {
     else {
         panic!()
     };
+
     assert_eq!(namespace.unwrap().text(), b"namespace");
     assert_eq!(name.text(), b"Result");
     assert_eq!(arguments.unwrap().children().count(), 0);
@@ -210,15 +233,18 @@ fn every_kind_has_a_view() {
         "local message = `value {value}` local items = {name = value, [key] = value, value}",
         "local identity = @[deprecated {reason = 'old'}] function() end object:method<<number>>(1)",
     ];
+
     let mut seen = Vec::new();
 
     for source in sources {
         let tree = check(source.as_bytes());
+
         assert!(
             tree.diagnostics.is_empty(),
             "{source}: {:?}",
             tree.diagnostics
         );
+
         seen.extend(tree.nodes.iter().map(|node| node.kind));
     }
 
@@ -309,6 +335,7 @@ const KINDS: &[Kind] = &[
 fn corpus_and_recovery() {
     for entry in std::fs::read_dir("vendor/luau/tests/conformance").unwrap() {
         let path = entry.unwrap().path();
+
         if path
             .extension()
             .is_some_and(|extension| extension == "lua" || extension == "luau")

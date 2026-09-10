@@ -7,11 +7,13 @@ fn children<'tree>(tree: &'tree Tree<'_>, node: &Node) -> &'tree [usize] {
 
 fn check(source: &[u8]) -> Tree<'_> {
     let tree = parse(BStr::new(source));
+
     let restored: Vec<_> = tree
         .tokens
         .iter()
         .flat_map(|token| token.bytes(tree.source).iter().copied())
         .collect();
+
     assert_eq!(restored, source);
     assert_eq!(tree.text(tree.root), source);
 
@@ -36,6 +38,7 @@ fn check(source: &[u8]) -> Tree<'_> {
 
     assert_eq!(end, tree.children.len());
     assert_eq!(parents[tree.root], 0);
+
     assert!(
         parents
             .iter()
@@ -52,6 +55,7 @@ fn check(source: &[u8]) -> Tree<'_> {
 
 fn accepted(source: &str) -> Tree<'_> {
     let tree = check(source.as_bytes());
+
     assert!(
         tree.diagnostics.is_empty(),
         "{source:?}: {:?}",
@@ -71,22 +75,26 @@ fn precedence_and_associativity() {
         ("return a or b and c", "or", "a", "b and c"),
     ] {
         let tree = accepted(source);
+
         let binary = tree
             .nodes
             .iter()
             .rfind(|node| node.kind == Kind::Binary)
             .unwrap();
+
         assert_eq!(tree.text(children(&tree, binary)[0]), left.as_bytes());
         assert_eq!(tree.text(children(&tree, binary)[1]), operator.as_bytes());
         assert_eq!(tree.text(children(&tree, binary)[2]), right.as_bytes());
     }
 
     let tree = accepted("return -a ^ 2");
+
     let unary = tree
         .nodes
         .iter()
         .find(|node| node.kind == Kind::Unary)
         .unwrap();
+
     assert_eq!(tree.nodes[children(&tree, unary)[1]].kind, Kind::Binary);
 }
 
@@ -146,6 +154,7 @@ fn attributed_declarations() {
             let source = format!(
                 "{attributes} {keyword} function identity<T>(value: T): T return value end"
             );
+
             let tree = accepted(&source);
             let block = &tree.nodes[children(&tree, &tree.nodes[tree.root])[0]];
             let statement = children(&tree, block)[0];
@@ -153,10 +162,12 @@ fn attributed_declarations() {
 
             assert_eq!(declaration.kind, kind);
             assert_eq!(tree.text(statement), source.as_bytes());
+
             assert_eq!(
                 tree.nodes[children(&tree, declaration)[0]].kind,
                 Kind::Attributes
             );
+
             assert_eq!(
                 tree.text(children(&tree, declaration)[0]),
                 attributes.as_bytes()
@@ -210,11 +221,13 @@ fn classes_are_structured() {
         for prefix in ["class", "open class", "export class", "export open class"] {
             let source = format!("{prefix} Child extends {reference} end");
             let tree = accepted(&source);
+
             let extends = tree
                 .nodes
                 .iter()
                 .find(|node| node.kind == Kind::Extends)
                 .unwrap();
+
             let superclass = children(&tree, extends)[0];
 
             assert_eq!(tree.nodes[superclass].kind, kind);
@@ -226,7 +239,9 @@ fn classes_are_structured() {
         let source = format!(
             "declare extern type Box extends Parent with {attributes} function get(self, key: string): number end"
         );
+
         let tree = accepted(&source);
+
         let method = tree
             .nodes
             .iter()
@@ -237,6 +252,7 @@ fn classes_are_structured() {
             tree.nodes[children(&tree, method)[0]].kind,
             Kind::Attributes
         );
+
         assert_eq!(tree.text(children(&tree, method)[0]), attributes.as_bytes());
         assert_eq!(tree.text(children(&tree, method)[1]), b"get");
     }
@@ -261,6 +277,7 @@ fn access_types_are_structured() {
     for access in ["read", "write"] {
         let source = format!("type Array = {{{access} number}}");
         let tree = accepted(&source);
+
         let table = tree
             .nodes
             .iter()
@@ -351,6 +368,7 @@ fn empty_type_arguments() {
         "object:identity<<>>()",
     ] {
         let tree = accepted(source);
+
         let arguments = tree
             .nodes
             .iter()
@@ -369,11 +387,13 @@ fn exported_functions_are_structured() {
         "@native export function identity<T>(value: T): T return value end",
     ] {
         let tree = accepted(source);
+
         let export = tree
             .nodes
             .iter()
             .find(|node| node.kind == Kind::Export)
             .unwrap();
+
         let function = &tree.nodes[*children(&tree, export).last().unwrap()];
 
         assert_eq!(function.kind, Kind::Function);
@@ -414,6 +434,7 @@ fn declaration_type_context() {
 #[test]
 fn types_are_structured() {
     let tree = accepted("type Value<T> = {read value: T?, callback: (T) -> (T, string)}");
+
     for kind in [
         Kind::TypeAlias,
         Kind::Generics,
@@ -430,11 +451,13 @@ fn types_are_structured() {
     }
 
     let tree = accepted("local value = callback<<number>>(input)");
+
     let call = tree
         .nodes
         .iter()
         .find(|node| node.kind == Kind::Call)
         .unwrap();
+
     assert_eq!(tree.nodes[children(&tree, call)[0]].kind, Kind::Instantiate);
 }
 
@@ -476,6 +499,7 @@ fn numeric_literals() {
         "0x1_0000_0000_0000_0000i",
     ] {
         let source = format!("return {literal}");
+
         assert!(
             !check(source.as_bytes()).diagnostics.is_empty(),
             "accepted {literal}"
@@ -537,6 +561,7 @@ fn nesting_boundary() {
 
     let source = format!("{}{}", "do ".repeat(257), "end ".repeat(257));
     let tree = check(source.as_bytes());
+
     assert!(
         tree.diagnostics
             .iter()
@@ -548,10 +573,12 @@ fn nesting_boundary() {
 fn recovery_and_bytes() {
     let tree = check(b"local broken = )\nlocal valid = '\xff' -- comment\nreturn valid");
     assert!(!tree.diagnostics.is_empty());
+
     assert!(
         tree.nodes.iter().any(|node| node.kind == Kind::Local
             && node.span.bytes(tree.source) == b"local valid = '\xff'")
     );
+
     assert!(tree.nodes.iter().any(|node| node.kind == Kind::Return));
 
     for first in u8::MIN..=u8::MAX {

@@ -92,6 +92,7 @@ impl Parser<'_> {
     fn consume(&mut self, kind: TokenKind) -> bool {
         if self.at(kind) {
             self.take();
+
             true
         } else {
             false
@@ -119,9 +120,11 @@ impl Parser<'_> {
                 TokenKind::Error(crate::LexError::BrokenString) => "unterminated string",
                 TokenKind::Error(crate::LexError::BrokenComment) => "unterminated comment",
                 TokenKind::Error(crate::LexError::BrokenUnicode { .. }) => "unexpected character",
+
                 TokenKind::Error(crate::LexError::BrokenInterpolatedDoubleBrace) => {
                     "invalid interpolation delimiter"
                 }
+
                 _ => message,
             },
         }
@@ -163,6 +166,7 @@ impl Parser<'_> {
 
     fn leaf(&mut self, kind: Kind) -> usize {
         let token = self.take();
+
         self.node(kind, token.span.start, [])
     }
 
@@ -212,6 +216,7 @@ impl Parser<'_> {
                     statements.push(statement);
                     self.consume(TokenKind::Byte(b';'));
                 }
+
                 Err(error) => {
                     self.tree.nodes.truncate(checkpoint);
                     self.tree.children.truncate(child_checkpoint);
@@ -266,6 +271,7 @@ impl Parser<'_> {
     fn binding(&mut self) -> Parsed {
         let start = self.current().span.start;
         let name = self.name()?;
+
         let annotation = if self.consume(TokenKind::Byte(b':')) {
             Some(self.annotation()?)
         } else {

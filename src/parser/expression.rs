@@ -14,6 +14,7 @@ impl Parser<'_> {
             TokenKind::Byte(b'-' | b'#') | TokenKind::Keyword(Keyword::Not) => {
                 let operator = self.leaf(Kind::Operator);
                 let operand = self.expression(8)?;
+
                 self.node(Kind::Unary, start, [operator, operand])
             }
 
@@ -33,15 +34,18 @@ impl Parser<'_> {
 
             TokenKind::Keyword(Keyword::Function) => {
                 self.take();
+
                 self.function(start, Kind::Function, Vec::new())?
             }
 
             TokenKind::Attribute | TokenKind::AttributeOpen => {
                 let attributes = self.attributes()?;
+
                 self.expect(
                     TokenKind::Keyword(Keyword::Function),
                     "expected function after attributes",
                 )?;
+
                 self.function(start, Kind::Function, vec![attributes])?
             }
 
@@ -72,9 +76,11 @@ impl Parser<'_> {
 
     pub(super) fn primary(&mut self) -> Parsed {
         let start = self.current().span.start;
+
         let mut left = if self.consume(TokenKind::Byte(b'(')) {
             let inner = self.expression(0)?;
             self.expect(TokenKind::Byte(b')'), "expected closing expression")?;
+
             self.node(Kind::Group, start, [inner])
         } else {
             self.name()?
@@ -85,6 +91,7 @@ impl Parser<'_> {
                 TokenKind::Byte(b'.') => {
                     self.take();
                     let name = self.name()?;
+
                     self.node(Kind::Field, start, [left, name])
                 }
 
@@ -92,20 +99,24 @@ impl Parser<'_> {
                     self.take();
                     let index = self.expression(0)?;
                     self.expect(TokenKind::Byte(b']'), "expected closing index")?;
+
                     self.node(Kind::Index, start, [left, index])
                 }
 
                 TokenKind::Byte(b':') => {
                     self.take();
                     let method = self.name()?;
+
                     let types = if self.byte(b'<') && self.next() == TokenKind::Byte(b'<') {
                         self.take();
                         let types = self.type_arguments()?;
                         self.expect(TokenKind::Byte(b'>'), "expected closing instantiation")?;
+
                         Some(types)
                     } else {
                         None
                     };
+
                     let arguments = self.arguments()?;
 
                     self.node(
@@ -117,6 +128,7 @@ impl Parser<'_> {
 
                 TokenKind::Byte(b'(' | b'{') | TokenKind::QuotedString | TokenKind::RawString => {
                     let arguments = self.arguments()?;
+
                     self.node(Kind::Call, start, [left, arguments])
                 }
 
@@ -124,6 +136,7 @@ impl Parser<'_> {
                     self.take();
                     let arguments = self.type_arguments()?;
                     self.expect(TokenKind::Byte(b'>'), "expected closing instantiation")?;
+
                     self.node(Kind::Instantiate, start, [left, arguments])
                 }
 
@@ -140,6 +153,7 @@ impl Parser<'_> {
         let children = match self.current().kind {
             TokenKind::Byte(b'(') => {
                 self.take();
+
                 let arguments = if self.byte(b')') {
                     Vec::new()
                 } else {
@@ -147,6 +161,7 @@ impl Parser<'_> {
                 };
 
                 self.expect(TokenKind::Byte(b')'), "expected closing arguments")?;
+
                 arguments
             }
 
@@ -168,6 +183,7 @@ impl Parser<'_> {
             self.nested(Self::conditional_expression)?
         } else {
             self.expect(TokenKind::Keyword(Keyword::Else), "expected else")?;
+
             self.expression(0)?
         };
 
@@ -180,18 +196,22 @@ impl Parser<'_> {
 
         while !self.byte(b'}') {
             let begin = self.current().span.start;
+
             let key = if self.consume(TokenKind::Byte(b'[')) {
                 let key = self.expression(0)?;
                 self.expect(TokenKind::Byte(b']'), "expected closing field key")?;
                 self.expect(TokenKind::Byte(b'='), "expected field value")?;
+
                 Some(key)
             } else if self.at(TokenKind::Name) && self.next() == TokenKind::Byte(b'=') {
                 let key = self.name()?;
                 self.take();
+
                 Some(key)
             } else {
                 None
             };
+
             let value = self.expression(0)?;
 
             fields.push(self.node(Kind::TableField, begin, key.into_iter().chain([value])));
@@ -202,6 +222,7 @@ impl Parser<'_> {
         }
 
         self.expect(TokenKind::Byte(b'}'), "expected closing table")?;
+
         Ok(self.node(Kind::Table, start, fields))
     }
 
@@ -221,6 +242,7 @@ impl Parser<'_> {
 
         loop {
             let token = self.current();
+
             let final_segment = matches!(
                 token.kind,
                 TokenKind::Interpolated(InterpolatedKind::Simple | InterpolatedKind::End)
@@ -291,10 +313,12 @@ fn priority(token: TokenKind) -> Option<(u8, u8)> {
     Some(match token {
         TokenKind::Keyword(Keyword::Or) => (1, 2),
         TokenKind::Keyword(Keyword::And) => (2, 3),
+
         TokenKind::Byte(b'<' | b'>')
         | TokenKind::Operator(
             Operator::Equal | Operator::NotEqual | Operator::LessEqual | Operator::GreaterEqual,
         ) => (3, 4),
+
         TokenKind::Operator(Operator::Concat) => (5, 5),
         TokenKind::Byte(b'+' | b'-') => (6, 7),
         TokenKind::Byte(b'*' | b'/' | b'%') | TokenKind::Operator(Operator::FloorDivide) => (7, 8),
@@ -315,12 +339,14 @@ fn number(bytes: &[u8]) -> bool {
     } else {
         Cow::Borrowed(bytes)
     };
+
     let Ok(text) = std::str::from_utf8(&normalized) else {
         return false;
     };
 
     let integer = text.ends_with('i');
     let digits = text.strip_suffix('i').unwrap_or(text);
+
     let radix = if digits.starts_with("0x") || digits.starts_with("0X") {
         16
     } else if digits.starts_with("0b") || digits.starts_with("0B") {

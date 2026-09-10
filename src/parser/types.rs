@@ -24,19 +24,23 @@ impl Parser<'_> {
 
         if self.consume(TokenKind::Operator(Operator::Ellipsis)) {
             let annotation = self.annotation()?;
+
             Ok(self.node(Kind::VariadicType, start, [annotation]))
         } else {
             let name = self.name()?;
+
             self.expect(
                 TokenKind::Operator(Operator::Ellipsis),
                 "expected generic pack",
             )?;
+
             Ok(self.node(Kind::GenericPack, start, [name]))
         }
     }
 
     fn composite(&mut self, allow_pack: bool, declaration: bool) -> Parsed {
         let start = self.current().span.start;
+
         let leading = if self.byte(b'|') || self.byte(b'&') {
             Some(self.take().kind)
         } else {
@@ -133,11 +137,14 @@ impl Parser<'_> {
             TokenKind::Name => {
                 let typeof_expression =
                     self.named(b"typeof") && self.next() != TokenKind::Byte(b'.');
+
                 let name = self.name()?;
+
                 if typeof_expression {
                     self.expect(TokenKind::Byte(b'('), "expected typeof expression")?;
                     let expression = self.expression(0)?;
                     self.expect(TokenKind::Byte(b')'), "expected closing typeof")?;
+
                     return Ok(self.node(Kind::TypeOf, start, [name, expression]));
                 }
 
@@ -146,6 +153,7 @@ impl Parser<'_> {
                 } else {
                     None
                 };
+
                 let arguments = if self.byte(b'<') {
                     Some(self.type_arguments()?)
                 } else {
@@ -177,6 +185,7 @@ impl Parser<'_> {
         }
 
         self.expect(TokenKind::Byte(b'>'), "expected closing type arguments")?;
+
         Ok(self.node(Kind::TypeArguments, start, arguments))
     }
 
@@ -203,6 +212,7 @@ impl Parser<'_> {
                 }
 
                 defaulted = true;
+
                 let default = if pack {
                     self.type_argument()?
                 } else {
@@ -239,6 +249,7 @@ impl Parser<'_> {
         }
 
         self.expect(TokenKind::Byte(b'>'), "expected closing generics")?;
+
         Ok(self.node(Kind::Generics, start, parameters))
     }
 
@@ -274,6 +285,7 @@ impl Parser<'_> {
         }
 
         self.expect(TokenKind::Byte(b')'), "expected closing type parameters")?;
+
         Ok(self.node(Kind::Parameters, start, parameters))
     }
 
@@ -286,6 +298,7 @@ impl Parser<'_> {
         }
 
         let parameters = self.type_parameters()?;
+
         let named = self.tree.children[self.tree.nodes[parameters].children.clone()]
             .iter()
             .any(|index| self.tree.nodes[*index].kind == Kind::TypeParameter);
@@ -293,6 +306,7 @@ impl Parser<'_> {
         if self.consume(TokenKind::Operator(Operator::Arrow)) {
             children.push(parameters);
             children.push(self.type_argument()?);
+
             return Ok(self.node(Kind::TypeFunctionExpression, start, children));
         }
 
@@ -301,6 +315,7 @@ impl Parser<'_> {
         }
 
         let parts = &self.tree.children[self.tree.nodes[parameters].children.clone()];
+
         let single = parts.len() == 1
             && !matches!(
                 self.tree.nodes[parts[0]].kind,
@@ -327,6 +342,7 @@ impl Parser<'_> {
 
         while !self.byte(b'}') {
             let begin = self.current().span.start;
+
             let access = if fields.is_empty()
                 && (self.named(b"read") || self.named(b"write"))
                 && self.next() != TokenKind::Byte(b':')
@@ -335,6 +351,7 @@ impl Parser<'_> {
             } else {
                 None
             };
+
             let shorthand = fields.is_empty()
                 && !self.byte(b'[')
                 && !(self.at(TokenKind::Name) && self.next() == TokenKind::Byte(b':'));
@@ -360,11 +377,13 @@ impl Parser<'_> {
         }
 
         self.expect(TokenKind::Byte(b'}'), "expected closing table type")?;
+
         Ok(self.node(Kind::TypeTable, start, fields))
     }
 
     pub(super) fn type_field(&mut self, declaration: bool) -> Parsed {
         let start = self.current().span.start;
+
         let access = if (self.named(b"read") || self.named(b"write"))
             && self.next() != TokenKind::Byte(b':')
         {
@@ -374,6 +393,7 @@ impl Parser<'_> {
         };
 
         let indexed = self.consume(TokenKind::Byte(b'['));
+
         let property = indexed
             && matches!(
                 self.current().kind,
@@ -384,12 +404,14 @@ impl Parser<'_> {
         let key = if indexed {
             let key = self.annotation()?;
             self.expect(TokenKind::Byte(b']'), "expected closing type index")?;
+
             key
         } else {
             self.name()?
         };
 
         self.expect(TokenKind::Byte(b':'), "expected field type")?;
+
         let annotation = if declaration && !indexed {
             self.declaration_annotation()?
         } else {

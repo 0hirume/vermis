@@ -5,6 +5,7 @@ use vermis::parse;
 #[test]
 fn upstream_programs() {
     let directory = Path::new("vendor/luau/tests/conformance");
+
     let mut files: Vec<_> = fs::read_dir(directory)
         .expect("pinned Luau corpus is required")
         .map(|entry| entry.expect("corpus entry").path())
@@ -13,6 +14,7 @@ fn upstream_programs() {
                 .is_some_and(|extension| extension == "luau" || extension == "lua")
         })
         .collect();
+
     files.sort();
     assert!(!files.is_empty(), "upstream corpus is empty");
 
@@ -31,12 +33,14 @@ fn upstream_programs() {
             .iter()
             .flat_map(|token| token.bytes(tree.source).iter().copied())
             .collect();
+
         assert_eq!(restored, source, "{}", path.display());
         assert_eq!(tree.text(tree.root), source.as_slice());
 
         for node in &tree.nodes {
             for child in &tree.children[node.children.clone()] {
                 let span = tree.nodes[*child].span;
+
                 assert!(
                     node.span.start <= span.start && span.end <= node.span.end,
                     "{}: {node:?}, child: {:?}",
