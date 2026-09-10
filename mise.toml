@@ -1,11 +1,7 @@
 [tools]
 "aqua:Kitware/CMake" = "latest"
-"aqua:rhysd/actionlint" = "latest"
 "aqua:tombi-toml/tombi" = "latest"
-"github:0hirume/breathers" = "latest"
 "github:llvm/llvm-project" = "latest"
-"github:zizmorcore/zizmor" = "latest"
-"npm:@actions/languageserver" = "latest"
 rust = { version = "nightly", profile = "minimal", components = ["rust-analyzer", "rustfmt", "clippy"] }
 
 [tasks.fuzz]
