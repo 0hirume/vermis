@@ -1,6 +1,6 @@
 use super::{Diagnostic, Keyword, Kind, Operator, Parsed, Parser, TokenKind};
 
-impl Parser<'_> {
+impl<const MARKUP: bool> Parser<'_, MARKUP> {
     pub(super) fn statement(&mut self) -> Parsed {
         let start = self.current().span.start;
 

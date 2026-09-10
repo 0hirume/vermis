@@ -8,6 +8,7 @@ enum BraceKind {
     Normal,
 }
 
+#[derive(Clone)]
 pub struct Lexer<'source> {
     source: &'source [u8],
     cursor: usize,
@@ -24,6 +25,18 @@ impl<'source> Lexer<'source> {
             braces: Vec::new(),
             finished: false,
         }
+    }
+
+    pub(crate) fn at(source: &'source BStr, cursor: usize) -> Self {
+        let mut lexer = Self::new(source);
+        lexer.cursor = cursor;
+
+        lexer
+    }
+
+    pub(crate) fn resume(&mut self, cursor: usize) {
+        self.cursor = cursor;
+        self.finished = false;
     }
 
     fn current(&self) -> Option<u8> {

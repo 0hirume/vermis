@@ -129,6 +129,8 @@ pub enum TokenKind {
     Whitespace,
     Comment,
     BlockComment,
+    MarkupText,
+    MarkupComment,
     Name,
     Number,
     RawString,

@@ -88,6 +88,20 @@ pub enum Kind {
     TypeIntersection,
     TypeOptional,
     TypeOf,
+
+    Element,
+    Fragment,
+    Opening,
+    Closing,
+    MarkupName,
+    MarkupAttributes,
+    MarkupAttribute,
+    MarkupSpread,
+    MarkupInferred,
+    MarkupChildren,
+    MarkupExpression,
+    MarkupText,
+    MarkupComment,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

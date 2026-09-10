@@ -2,7 +2,7 @@ use super::{InterpolatedKind, Keyword, Kind, Operator, Parsed, Parser, TokenKind
 use bstr::ByteSlice;
 use std::borrow::Cow;
 
-impl Parser<'_> {
+impl<const MARKUP: bool> Parser<'_, MARKUP> {
     pub(super) fn expression(&mut self, minimum: u8) -> Parsed {
         self.nested(|parser| parser.binary(minimum))
     }
@@ -82,6 +82,8 @@ impl Parser<'_> {
             self.expect(TokenKind::Byte(b')'), "expected closing expression")?;
 
             self.node(Kind::Group, start, [inner])
+        } else if MARKUP && self.byte(b'<') {
+            self.markup()?
         } else {
             self.name()?
         };

@@ -1,4 +1,5 @@
 mod expression;
+mod markup;
 mod statement;
 mod types;
 
@@ -10,19 +11,29 @@ use bstr::{BStr, ByteSlice};
 
 type Parsed = Result<usize, Diagnostic>;
 
-struct Parser<'source> {
+struct Parser<'source, const MARKUP: bool> {
     tree: Tree<'source>,
     cursor: usize,
     end: usize,
     depth: usize,
+    lexer: Option<crate::Lexer<'source>>,
 }
 
 #[must_use]
 pub fn parse(source: &BStr) -> Tree<'_> {
-    let mut parser = Parser {
+    parse_source::<false>(source)
+}
+
+#[must_use]
+pub fn parse_luaux(source: &BStr) -> Tree<'_> {
+    parse_source::<true>(source)
+}
+
+fn parse_source<const MARKUP: bool>(source: &BStr) -> Tree<'_> {
+    let mut parser = Parser::<MARKUP> {
         tree: Tree {
             source,
-            tokens: tokenize(source),
+            tokens: if MARKUP { Vec::new() } else { tokenize(source) },
             nodes: Vec::new(),
             children: Vec::new(),
             root: 0,
@@ -31,6 +42,11 @@ pub fn parse(source: &BStr) -> Tree<'_> {
         cursor: 0,
         end: 0,
         depth: 0,
+        lexer: if MARKUP {
+            Some(crate::Lexer::new(source))
+        } else {
+            None
+        },
     };
 
     parser.skip_trivia();
@@ -42,7 +58,7 @@ pub fn parse(source: &BStr) -> Tree<'_> {
     parser.tree
 }
 
-impl Parser<'_> {
+impl<const MARKUP: bool> Parser<'_, MARKUP> {
     fn current(&self) -> Token {
         self.tree.tokens[self.cursor]
     }
@@ -64,6 +80,16 @@ impl Parser<'_> {
     }
 
     fn next(&self) -> TokenKind {
+        if MARKUP {
+            return self
+                .lexer
+                .as_ref()
+                .expect("markup token stream")
+                .clone()
+                .find(|token| !trivia(token.kind))
+                .map_or(TokenKind::Eof, |token| token.kind);
+        }
+
         self.tree.tokens[self.cursor + usize::from(!self.at(TokenKind::Eof))..]
             .iter()
             .find(|token| !trivia(token.kind))
@@ -72,7 +98,29 @@ impl Parser<'_> {
     }
 
     fn skip_trivia(&mut self) {
-        while trivia(self.current().kind) {
+        if !MARKUP {
+            while trivia(self.current().kind) {
+                self.cursor += 1;
+            }
+
+            return;
+        }
+
+        loop {
+            if self.cursor == self.tree.tokens.len() {
+                self.tree.tokens.push(
+                    self.lexer
+                        .as_mut()
+                        .expect("lazy token stream")
+                        .next()
+                        .expect("token stream ends in EOF"),
+                );
+            }
+
+            if !trivia(self.current().kind) {
+                break;
+            }
+
             self.cursor += 1;
         }
     }

@@ -5,7 +5,7 @@ mod tree;
 mod view;
 
 pub use lexer::{Lexer, classify_name, tokenize};
-pub use parser::parse;
+pub use parser::{parse, parse_luaux};
 pub use syntax::{InterpolatedKind, Keyword, LexError, Operator, Span, Token, TokenKind};
 pub use tree::{Diagnostic, Kind, Node, Tree};
 pub use view::{Children, Parts, View};

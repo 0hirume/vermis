@@ -1,6 +1,6 @@
 use super::{Keyword, Kind, Operator, Parsed, Parser, TokenKind};
 
-impl Parser<'_> {
+impl<const MARKUP: bool> Parser<'_, MARKUP> {
     pub(super) fn annotation(&mut self) -> Parsed {
         self.nested(|parser| parser.composite(false, false))
     }

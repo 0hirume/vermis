@@ -1,5 +1,5 @@
 use bstr::BStr;
-use vermis::{Kind, Parts, Tree, View, parse};
+use vermis::{Kind, Parts, Tree, View, parse, parse_luaux};
 
 fn check(source: &[u8]) -> Tree<'_> {
     let tree = parse(BStr::new(source));
@@ -34,6 +34,96 @@ fn first<'tree, 'source>(tree: &'tree Tree<'source>, kind: Kind) -> View<'tree, 
             .unwrap(),
     )
     .unwrap()
+}
+
+#[test]
+fn markup_views() {
+    let tree = parse_luaux(BStr::new(b"return <Components.Frame Enabled Text='literal' Size={size} {props} ={props.Name}>before<>{child + offset}<Button/><!-- note -->{--[[ note ]]}</>after</Components.Frame>"));
+    assert!(tree.diagnostics.is_empty(), "{:?}", tree.diagnostics);
+
+    for kind in [
+        Kind::Element,
+        Kind::Fragment,
+        Kind::Opening,
+        Kind::Closing,
+        Kind::MarkupName,
+        Kind::MarkupAttributes,
+        Kind::MarkupAttribute,
+        Kind::MarkupSpread,
+        Kind::MarkupInferred,
+        Kind::MarkupChildren,
+        Kind::MarkupExpression,
+        Kind::MarkupText,
+        Kind::MarkupComment,
+    ] {
+        assert!(first(&tree, kind).parts().is_some(), "{kind:?}");
+    }
+
+    let element = tree
+        .nodes
+        .iter()
+        .rposition(|node| node.kind == Kind::Element)
+        .unwrap();
+
+    let Parts::Markup {
+        opening,
+        children,
+        closing,
+    } = tree.view(element).unwrap().parts().unwrap()
+    else {
+        panic!()
+    };
+
+    assert!(children.is_some());
+    assert_eq!(closing.unwrap().text(), b"</Components.Frame>");
+
+    let Parts::Tag { name, attributes } = opening.parts().unwrap() else {
+        panic!()
+    };
+
+    let Parts::MarkupName { segments } = name.unwrap().parts().unwrap() else {
+        panic!()
+    };
+
+    assert_eq!(
+        segments.map(View::text).collect::<Vec<_>>(),
+        [BStr::new(b"Components"), BStr::new(b"Frame")]
+    );
+
+    let Parts::MarkupAttributes { mut attributes } = attributes.unwrap().parts().unwrap() else {
+        panic!()
+    };
+
+    let Parts::MarkupAttribute { name, value } = attributes.next().unwrap().parts().unwrap() else {
+        panic!()
+    };
+
+    assert_eq!(name.text(), b"Enabled");
+    assert!(value.is_none());
+
+    let Parts::MarkupAttribute { value, .. } = attributes.next().unwrap().parts().unwrap() else {
+        panic!()
+    };
+
+    assert_eq!(value.unwrap().text(), b"'literal'");
+
+    let Parts::MarkupExpression { expression } =
+        first(&tree, Kind::MarkupExpression).parts().unwrap()
+    else {
+        panic!()
+    };
+
+    assert_eq!(expression.kind(), Kind::Name);
+
+    let Parts::Markup {
+        children, closing, ..
+    } = first(&tree, Kind::Element).parts().unwrap()
+    else {
+        panic!()
+    };
+
+    assert!(children.is_none());
+    assert!(closing.is_none());
 }
 
 #[test]
