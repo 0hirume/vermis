@@ -1,8 +1,8 @@
-use bstr::{BStr, ByteSlice};
-use vermis::{InterpolatedKind, Keyword, LexError, Operator, Token, TokenKind, tokenize};
+use vermis::{InterpolatedKind, Keyword, LexError, Lexer, Operator, Token, TokenKind};
 
-fn syntax(source: &BStr) -> Vec<TokenKind> {
-    tokenize(source)
+fn syntax(source: &[u8]) -> Vec<TokenKind> {
+    Lexer::new(source)
+        .collect::<Vec<_>>()
         .into_iter()
         .filter_map(|token| match token.kind {
             TokenKind::Eof | TokenKind::Whitespace => None,
@@ -13,8 +13,8 @@ fn syntax(source: &BStr) -> Vec<TokenKind> {
 
 #[test]
 fn spans_partition_arbitrary_bytes() {
-    let source = BStr::new(b"-- \xff\nlocal type = \"\xff\"\0tail");
-    let tokens = tokenize(source);
+    let source = b"-- \xff\nlocal type = \"\xff\"\0tail";
+    let tokens = Lexer::new(source).collect::<Vec<_>>();
     let mut reconstructed = Vec::new();
     let mut end = 0;
 
@@ -28,17 +28,17 @@ fn spans_partition_arbitrary_bytes() {
         assert_eq!(token.span.start, end);
         assert!(token.span.end > token.span.start);
 
-        reconstructed.extend_from_slice(token.bytes(source).as_bytes());
+        reconstructed.extend_from_slice(token.bytes(source));
         end = token.span.end;
     }
 
     assert_eq!(end, source.len());
-    assert_eq!(reconstructed, source.as_bytes());
+    assert_eq!(reconstructed, source);
 }
 
 #[test]
 fn recognizes_longest_operators() {
-    let source = BStr::new(b"== <= >= ~= .. ... -> :: // += -= *= /= //= %= ^= ..=");
+    let source = b"== <= >= ~= .. ... -> :: // += -= *= /= //= %= ^= ..=";
 
     assert_eq!(
         syntax(source),
@@ -66,7 +66,7 @@ fn recognizes_longest_operators() {
 
 #[test]
 fn recognizes_comments_and_strings() {
-    let source = BStr::new(b"-- line\n--[=[block]=]\n[==[raw]==] 'quoted' \"double\"");
+    let source = b"-- line\n--[=[block]=]\n[==[raw]==] 'quoted' \"double\"";
 
     assert_eq!(
         syntax(source),
@@ -82,7 +82,7 @@ fn recognizes_comments_and_strings() {
 
 #[test]
 fn tracks_interpolated_braces() {
-    let source = BStr::new(b"`plain` `a{x}b` `a{{bad}}b`");
+    let source = b"`plain` `a{x}b` `a{{bad}}b`";
 
     assert_eq!(
         syntax(source),
@@ -100,8 +100,8 @@ fn tracks_interpolated_braces() {
 
 #[test]
 fn handles_unicode_without_requiring_utf8() {
-    let source = BStr::new(b"\xff\xfe\xe2!\xe2\x98\x83 \"\xff\"");
-    let tokens = tokenize(source);
+    let source = b"\xff\xfe\xe2!\xe2\x98\x83 \"\xff\"";
+    let tokens = Lexer::new(source).collect::<Vec<_>>();
 
     assert_eq!(
         syntax(source),
@@ -121,7 +121,7 @@ fn handles_unicode_without_requiring_utf8() {
 
 #[test]
 fn scans_names_and_number_like_sequences() {
-    let source = BStr::new(b"local foo_1 = .5 0xABC 1e+2");
+    let source = b"local foo_1 = .5 0xABC 1e+2";
 
     assert_eq!(
         syntax(source),
@@ -137,7 +137,6 @@ fn scans_names_and_number_like_sequences() {
 }
 
 fn check(source: &[u8], expected: &[(TokenKind, &[u8])]) {
-    let source = BStr::new(source);
     let mut lexer = vermis::Lexer::new(source);
     let mut offset = 0;
 
@@ -147,7 +146,7 @@ fn check(source: &[u8], expected: &[(TokenKind, &[u8])]) {
         assert_eq!(token.kind, kind);
         assert_eq!(token.span.start, offset);
         assert_eq!(token.span.end, offset + bytes.len());
-        assert_eq!(token.bytes(source).as_bytes(), bytes);
+        assert_eq!(token.bytes(source), bytes);
 
         offset = token.span.end;
     }
@@ -286,16 +285,16 @@ fn interpolation_modes() {
 
 #[test]
 fn broken_braces_have_separate_diagnostic_span() {
-    let source = BStr::new(b"`{{x}`");
-    let token = tokenize(source)[0];
+    let source = b"`{{x}`";
+    let token = Lexer::new(source).collect::<Vec<_>>()[0];
 
     assert_eq!(
         token.kind,
         TokenKind::Error(LexError::BrokenInterpolatedDoubleBrace)
     );
 
-    assert_eq!(token.bytes(source), BStr::new(b"`{{"));
-    assert_eq!(token.diagnostic_span().bytes(source), BStr::new(b"`"));
+    assert_eq!(token.bytes(source), b"`{{");
+    assert_eq!(token.diagnostic_span().bytes(source), b"`");
 }
 
 #[test]
@@ -365,7 +364,7 @@ fn every_byte_pair_terminates_and_round_trips() {
     for first in u8::MIN..=u8::MAX {
         for second in u8::MIN..=u8::MAX {
             let bytes = [first, second];
-            let source = BStr::new(&bytes);
+            let source = &bytes;
             let mut lexer = vermis::Lexer::new(source);
             let mut end = 0;
 
@@ -393,8 +392,8 @@ fn every_byte_pair_terminates_and_round_trips() {
 
 #[test]
 fn preserves_embedded_nul() {
-    let source = BStr::new(b"a\0b");
-    let tokens: Vec<Token> = tokenize(source);
+    let source = b"a\0b";
+    let tokens: Vec<Token> = Lexer::new(source).collect::<Vec<_>>();
 
     assert_eq!(
         tokens.iter().map(|token| token.kind).collect::<Vec<_>>(),

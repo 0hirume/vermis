@@ -9,7 +9,6 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-bstr = "1.13.1"
 vermis = { path = ".." }
 
 [[bin]]

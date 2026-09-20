@@ -1,7 +1,5 @@
 use std::ops::Range;
 
-use bstr::BStr;
-
 use crate::{Span, Token};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,7 +117,7 @@ pub struct Diagnostic {
 
 #[derive(Debug)]
 pub struct Tree<'source> {
-    pub source: &'source BStr,
+    pub source: &'source [u8],
     pub tokens: Vec<Token>,
     pub nodes: Vec<Node>,
     pub children: Vec<usize>,
@@ -129,7 +127,7 @@ pub struct Tree<'source> {
 
 impl Tree<'_> {
     #[must_use]
-    pub fn text(&self, node: usize) -> &BStr {
+    pub fn text(&self, node: usize) -> &[u8] {
         self.nodes[node].span.bytes(self.source)
     }
 }

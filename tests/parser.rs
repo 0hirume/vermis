@@ -1,4 +1,3 @@
-use bstr::BStr;
 use vermis::{Kind, Node, Tree, parse};
 
 fn children<'tree>(tree: &'tree Tree<'_>, node: &Node) -> &'tree [usize] {
@@ -6,7 +5,7 @@ fn children<'tree>(tree: &'tree Tree<'_>, node: &Node) -> &'tree [usize] {
 }
 
 fn check(source: &[u8]) -> Tree<'_> {
-    let tree = parse(BStr::new(source));
+    let tree = parse(source);
 
     let restored: Vec<_> = tree
         .tokens

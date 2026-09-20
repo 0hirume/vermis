@@ -1,7 +1,5 @@
 use std::str::{self, Utf8Error};
 
-use bstr::{BStr, ByteSlice};
-
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct Span {
     pub start: usize,
@@ -20,15 +18,15 @@ impl Span {
     }
 
     #[must_use]
-    pub fn bytes(self, source: &BStr) -> &BStr {
-        BStr::new(&source.as_bytes()[self.start..self.end])
+    pub fn bytes(self, source: &[u8]) -> &[u8] {
+        &source[self.start..self.end]
     }
 
     /// # Errors
     ///
     /// Returns an error when the spanned bytes are not valid UTF-8.
-    pub fn utf8(self, source: &BStr) -> Result<&str, Utf8Error> {
-        str::from_utf8(self.bytes(source).as_bytes())
+    pub fn utf8(self, source: &[u8]) -> Result<&str, Utf8Error> {
+        str::from_utf8(self.bytes(source))
     }
 }
 
@@ -58,8 +56,8 @@ pub enum Keyword {
 }
 
 impl Keyword {
-    pub(crate) fn from_name(name: &BStr) -> Option<Self> {
-        match name.as_bytes() {
+    pub(crate) fn from_name(name: &[u8]) -> Option<Self> {
+        match name {
             b"and" => Some(Self::And),
             b"break" => Some(Self::Break),
             b"do" => Some(Self::Do),
@@ -164,14 +162,14 @@ impl Token {
     }
 
     #[must_use]
-    pub fn bytes(self, source: &BStr) -> &BStr {
+    pub fn bytes(self, source: &[u8]) -> &[u8] {
         self.span.bytes(source)
     }
 
     /// # Errors
     ///
     /// Returns an error when the token bytes are not valid UTF-8.
-    pub fn utf8(self, source: &BStr) -> Result<&str, Utf8Error> {
+    pub fn utf8(self, source: &[u8]) -> Result<&str, Utf8Error> {
         self.span.utf8(source)
     }
 }

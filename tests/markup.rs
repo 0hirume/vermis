@@ -1,7 +1,7 @@
 use vermis::{Kind, TokenKind, Tree, parse, parse_luaux};
 
 fn check(source: &[u8]) -> Tree<'_> {
-    let tree = parse_luaux(source.into());
+    let tree = parse_luaux(source);
     let mut end = 0;
 
     for (index, token) in tree.tokens.iter().enumerate() {
@@ -98,7 +98,7 @@ fn grammar() {
         );
 
         assert!(
-            !parse(source.as_bytes().into()).diagnostics.is_empty(),
+            !parse(source.as_bytes()).diagnostics.is_empty(),
             "standard Luau accepted {source}"
         );
     }
@@ -180,7 +180,7 @@ fn isolation() {
         }
 
         let source = std::fs::read(path).unwrap();
-        let plain = parse(source.as_slice().into());
+        let plain = parse(source.as_slice());
         let markup = check(&source);
         assert_eq!(plain.tokens, markup.tokens);
         assert_eq!(plain.nodes, markup.nodes);

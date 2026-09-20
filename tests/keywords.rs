@@ -1,8 +1,7 @@
-use bstr::BStr;
-use vermis::{Keyword, TokenKind, tokenize};
+use vermis::{Keyword, Lexer, TokenKind};
 
 fn first(source: &[u8]) -> TokenKind {
-    tokenize(BStr::new(source))[0].kind
+    Lexer::new(source).collect::<Vec<_>>()[0].kind
 }
 
 #[test]

@@ -4,11 +4,9 @@ mod statement;
 mod types;
 
 use crate::{
-    Diagnostic, InterpolatedKind, Keyword, Kind, Node, Operator, Span, Token, TokenKind, Tree,
-    tokenize,
+    Diagnostic, InterpolatedKind, Keyword, Kind, Lexer, Node, Operator, Span, Token, TokenKind,
+    Tree,
 };
-
-use bstr::{BStr, ByteSlice};
 
 type Parsed = Result<usize, Diagnostic>;
 
@@ -21,20 +19,24 @@ struct Parser<'source, const MARKUP: bool> {
 }
 
 #[must_use]
-pub fn parse(source: &BStr) -> Tree<'_> {
+pub fn parse(source: &[u8]) -> Tree<'_> {
     parse_source::<false>(source)
 }
 
 #[must_use]
-pub fn parse_luaux(source: &BStr) -> Tree<'_> {
+pub fn parse_luaux(source: &[u8]) -> Tree<'_> {
     parse_source::<true>(source)
 }
 
-fn parse_source<const MARKUP: bool>(source: &BStr) -> Tree<'_> {
+fn parse_source<const MARKUP: bool>(source: &[u8]) -> Tree<'_> {
     let mut parser = Parser::<MARKUP> {
         tree: Tree {
             source,
-            tokens: if MARKUP { Vec::new() } else { tokenize(source) },
+            tokens: if MARKUP {
+                Vec::new()
+            } else {
+                Lexer::new(source).collect()
+            },
             nodes: Vec::new(),
             children: Vec::new(),
             root: 0,
@@ -77,7 +79,7 @@ impl<const MARKUP: bool> Parser<'_, MARKUP> {
     }
 
     fn named(&self, name: &[u8]) -> bool {
-        self.at(TokenKind::Name) && self.current().bytes(self.tree.source).as_bytes() == name
+        self.at(TokenKind::Name) && self.current().bytes(self.tree.source) == name
     }
 
     fn next(&self) -> TokenKind {
@@ -294,7 +296,7 @@ impl<const MARKUP: bool> Parser<'_, MARKUP> {
                     break;
                 }
 
-                let gap = &self.tree.source.as_bytes()[self.end..self.current().span.start];
+                let gap = &self.tree.source[self.end..self.current().span.start];
 
                 if gap.contains(&b'\n')
                     || matches!(

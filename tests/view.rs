@@ -1,8 +1,7 @@
-use bstr::BStr;
 use vermis::{Kind, Parts, Tree, View, parse, parse_luaux};
 
 fn check(source: &[u8]) -> Tree<'_> {
-    let tree = parse(BStr::new(source));
+    let tree = parse(source);
 
     for index in 0..tree.nodes.len() {
         let view = tree.view(index).unwrap();
@@ -38,7 +37,7 @@ fn first<'tree, 'source>(tree: &'tree Tree<'source>, kind: Kind) -> View<'tree, 
 
 #[test]
 fn markup_views() {
-    let tree = parse_luaux(BStr::new(b"return <Components.Frame Enabled Text='literal' Size={size} {props} ={props.Name}>before<>{child + offset}<Button/><!-- note -->{--[[ note ]]}</>after</Components.Frame>"));
+    let tree = parse_luaux(b"return <Components.Frame Enabled Text='literal' Size={size} {props} ={props.Name}>before<>{child + offset}<Button/><!-- note -->{--[[ note ]]}</>after</Components.Frame>");
     assert!(tree.diagnostics.is_empty(), "{:?}", tree.diagnostics);
 
     for kind in [
@@ -87,7 +86,7 @@ fn markup_views() {
 
     assert_eq!(
         segments.map(View::text).collect::<Vec<_>>(),
-        [BStr::new(b"Components"), BStr::new(b"Frame")]
+        [b"Components".as_slice(), b"Frame".as_slice()]
     );
 
     let Parts::MarkupAttributes { mut attributes } = attributes.unwrap().parts().unwrap() else {
@@ -131,7 +130,7 @@ fn named_statements_and_expressions() {
     let tree = check(b"@native export function identity<T>(value: T): T local copy = value + 1 copy += 2 return copy end");
     assert!(tree.diagnostics.is_empty(), "{:?}", tree.diagnostics);
 
-    let Parts::Root { block } = tree.root_view().unwrap().parts().unwrap() else {
+    let Parts::Root { block } = tree.view(tree.root).unwrap().parts().unwrap() else {
         panic!()
     };
 
@@ -461,18 +460,18 @@ fn borrowed_children_and_invalid_indices() {
     let start = tree.nodes[tree.root].children.start;
     tree.children.insert(start, usize::MAX);
     tree.nodes[tree.root].children.end += 1;
-    let root = tree.root_view().unwrap();
+    let root = tree.view(tree.root).unwrap();
     assert!(root.parts().is_none());
     assert_eq!(root.children().count(), 1);
 
     tree.nodes[tree.root].children.end = usize::MAX;
-    assert!(tree.root_view().unwrap().parts().is_none());
-    assert_eq!(tree.root_view().unwrap().children().count(), 0);
+    assert!(tree.view(tree.root).unwrap().parts().is_none());
+    assert_eq!(tree.view(tree.root).unwrap().children().count(), 0);
 
     tree.root = usize::MAX;
-    assert!(tree.root_view().is_none());
+    assert!(tree.view(tree.root).is_none());
 
-    let mut tree = parse(BStr::new("return first + second"));
+    let mut tree = parse(b"return first + second");
     let binary = first(&tree, Kind::Binary).index();
     tree.nodes[binary].children.end -= 1;
     assert!(tree.view(binary).unwrap().parts().is_none());

@@ -1,7 +1,5 @@
 use std::{fmt, iter::FusedIterator, slice};
 
-use bstr::{BStr, ByteSlice};
-
 use crate::{Kind, Node, Span, Tree};
 
 #[derive(Clone, Copy)]
@@ -191,7 +189,7 @@ pub enum Parts<'tree, 'source> {
     },
 
     Attribute {
-        name: &'source BStr,
+        name: &'source [u8],
         arguments: Option<View<'tree, 'source>>,
     },
 
@@ -350,11 +348,6 @@ impl<'source> Tree<'source> {
 
         Some(View { tree: self, index })
     }
-
-    #[must_use]
-    pub fn root_view(&self) -> Option<View<'_, 'source>> {
-        self.view(self.root)
-    }
 }
 
 impl<'tree, 'source> View<'tree, 'source> {
@@ -379,7 +372,7 @@ impl<'tree, 'source> View<'tree, 'source> {
     }
 
     #[must_use]
-    pub fn text(self) -> &'source BStr {
+    pub fn text(self) -> &'source [u8] {
         self.span().bytes(self.tree.source)
     }
 
@@ -746,20 +739,13 @@ impl<'tree, 'source> View<'tree, 'source> {
                 Parts::TableField {
                     key,
                     value,
-                    indexed: key.is_some() && self.text().as_bytes().starts_with(b"["),
+                    indexed: key.is_some() && self.text().starts_with(b"["),
                 }
             }
 
             Kind::Attribute => {
                 let name = children.optional(Kind::Name).map_or_else(
-                    || {
-                        BStr::new(
-                            self.text()
-                                .as_bytes()
-                                .strip_prefix(b"@")
-                                .unwrap_or(self.text().as_bytes()),
-                        )
-                    },
+                    || self.text().strip_prefix(b"@").unwrap_or(self.text()),
                     Self::text,
                 );
 

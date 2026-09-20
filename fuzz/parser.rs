@@ -1,12 +1,11 @@
 #![no_main]
 
-use bstr::BStr;
 use libfuzzer_sys::fuzz_target;
 use vermis::{parse, parse_luaux};
 
 fuzz_target!(|source: &[u8]| {
     for parse in [parse, parse_luaux] {
-        let tree = parse(BStr::new(source));
+        let tree = parse(source);
         let mut end = 0;
 
         for token in &tree.tokens {

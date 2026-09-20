@@ -1,4 +1,3 @@
-use bstr::BStr;
 use std::{fs, path::Path};
 use vermis::parse;
 
@@ -22,7 +21,7 @@ fn upstream_programs() {
 
     for path in files {
         let source = fs::read(&path).expect("read corpus program");
-        let tree = parse(BStr::new(&source));
+        let tree = parse(&source);
 
         if !tree.diagnostics.is_empty() {
             failures.push(format!("{}: {:?}", path.display(), tree.diagnostics));

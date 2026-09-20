@@ -1,6 +1,5 @@
 use super::{Parsed, Parser};
 use crate::{Diagnostic, Kind, Lexer, Span, Token, TokenKind};
-use bstr::ByteSlice;
 
 struct Markup<'parser, 'source, const MARKUP: bool> {
     parser: &'parser mut Parser<'source, MARKUP>,
@@ -32,7 +31,7 @@ impl<const MARKUP: bool> Parser<'_, MARKUP> {
 
 impl<const MARKUP: bool> Markup<'_, '_, MARKUP> {
     fn source(&self) -> &[u8] {
-        self.parser.tree.source.as_bytes()
+        self.parser.tree.source
     }
 
     fn at(&self, bytes: &[u8]) -> bool {

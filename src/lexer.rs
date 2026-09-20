@@ -1,5 +1,3 @@
-use bstr::{BStr, ByteSlice};
-
 use crate::syntax::{InterpolatedKind, Keyword, LexError, Operator, Span, Token, TokenKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,16 +16,16 @@ pub struct Lexer<'source> {
 
 impl<'source> Lexer<'source> {
     #[must_use]
-    pub fn new(source: &'source BStr) -> Self {
+    pub fn new(source: &'source [u8]) -> Self {
         Self {
-            source: source.as_bytes(),
+            source,
             cursor: 0,
             braces: Vec::new(),
             finished: false,
         }
     }
 
-    pub(crate) fn at(source: &'source BStr, cursor: usize) -> Self {
+    pub(crate) fn at(source: &'source [u8], cursor: usize) -> Self {
         let mut lexer = Self::new(source);
         lexer.cursor = cursor;
 
@@ -473,7 +471,7 @@ impl<'source> Lexer<'source> {
         let start = self.cursor;
         self.name_body();
 
-        classify_name(BStr::new(&self.source[start..self.cursor]))
+        classify_name(&self.source[start..self.cursor])
     }
 
     fn name_body(&mut self) {
@@ -581,12 +579,7 @@ enum Separator {
 }
 
 #[must_use]
-pub fn tokenize(source: &BStr) -> Vec<Token> {
-    Lexer::new(source).collect()
-}
-
-#[must_use]
-pub fn classify_name(name: &BStr) -> TokenKind {
+pub fn classify_name(name: &[u8]) -> TokenKind {
     match Keyword::from_name(name) {
         Some(keyword) => TokenKind::Keyword(keyword),
         None => TokenKind::Name,

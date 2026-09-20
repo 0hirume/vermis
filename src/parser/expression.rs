@@ -1,5 +1,4 @@
 use super::{InterpolatedKind, Keyword, Kind, Operator, Parsed, Parser, TokenKind};
-use bstr::ByteSlice;
 use std::borrow::Cow;
 
 impl<const MARKUP: bool> Parser<'_, MARKUP> {
@@ -19,7 +18,7 @@ impl<const MARKUP: bool> Parser<'_, MARKUP> {
             }
 
             TokenKind::Number => {
-                if !number(self.current().bytes(self.tree.source).as_bytes()) {
+                if !number(self.current().bytes(self.tree.source)) {
                     return Err(self.error("malformed number"));
                 }
 
@@ -249,9 +248,7 @@ impl<const MARKUP: bool> Parser<'_, MARKUP> {
     }
 
     pub(super) fn string(&mut self) -> Parsed {
-        if self.at(TokenKind::QuotedString)
-            && !escapes(self.current().bytes(self.tree.source).as_bytes())
-        {
+        if self.at(TokenKind::QuotedString) && !escapes(self.current().bytes(self.tree.source)) {
             return Err(self.error("malformed string escape"));
         }
 
@@ -274,7 +271,7 @@ impl<const MARKUP: bool> Parser<'_, MARKUP> {
                 return Err(self.error("expected interpolation segment"));
             }
 
-            if !escapes(token.bytes(self.tree.source).as_bytes()) {
+            if !escapes(token.bytes(self.tree.source)) {
                 return Err(self.error("malformed interpolation escape"));
             }
 
