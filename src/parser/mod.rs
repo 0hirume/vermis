@@ -7,6 +7,7 @@ use crate::{
     Diagnostic, InterpolatedKind, Keyword, Kind, Node, Operator, Span, Token, TokenKind, Tree,
     tokenize,
 };
+
 use bstr::{BStr, ByteSlice};
 
 type Parsed = Result<usize, Diagnostic>;
