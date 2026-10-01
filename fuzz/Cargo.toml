@@ -1,19 +1,19 @@
 [package]
 name = "vermis-fuzz"
 version = "0.0.0"
-publish = false
 edition = "2024"
+publish = false
 
 [package.metadata]
 cargo-fuzz = true
 
-[dependencies]
-libfuzzer-sys = "0.4"
-vermis = { path = ".." }
-
 [[bin]]
+bench = false
+doc = false
 name = "parser"
 path = "parser.rs"
 test = false
-doc = false
-bench = false
+
+[dependencies]
+libfuzzer-sys = "0.4"
+vermis = { path = ".." }
