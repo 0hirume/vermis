@@ -98,6 +98,33 @@ fn precedence_and_associativity() {
 }
 
 #[test]
+fn condition_bindings() {
+    for source in [
+        "if local first: number = value then use(first) elseif const second = other then use(second) end",
+        "return if local first: number = value then first elseif const second = other then second else fallback",
+    ] {
+        let tree = accepted(source);
+        let bindings: Vec<_> = tree
+            .nodes
+            .iter()
+            .filter(|node| matches!(node.kind, Kind::Local | Kind::Constant))
+            .map(|node| {
+                let children = children(&tree, node);
+                (node.kind, tree.text(children[0]), tree.text(children[1]))
+            })
+            .collect();
+
+        assert_eq!(
+            bindings,
+            [
+                (Kind::Local, b"first: number".as_slice(), b"value".as_slice()),
+                (Kind::Constant, b"second".as_slice(), b"other".as_slice()),
+            ]
+        );
+    }
+}
+
+#[test]
 fn grammar() {
     for source in [
         "if const ready = value then return ready elseif other then use() else fallback() end",

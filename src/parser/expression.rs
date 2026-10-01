@@ -177,25 +177,7 @@ impl<const MARKUP: bool> Parser<'_, MARKUP> {
     fn conditional_expression(&mut self) -> Parsed {
         let start = self.take().span.start;
 
-        let condition = if self.keyword(Keyword::Local) || self.named(b"const") {
-            let constant = self.named(b"const");
-            let begin = self.take().span.start;
-            let binding = self.binding()?;
-            self.expect(TokenKind::Byte(b'='), "expected condition initializer")?;
-            let value = self.expression(0)?;
-
-            self.node(
-                if constant {
-                    Kind::Constant
-                } else {
-                    Kind::Local
-                },
-                begin,
-                [binding, value],
-            )
-        } else {
-            self.expression(0)?
-        };
+        let condition = self.condition()?;
 
         self.expect(TokenKind::Keyword(Keyword::Then), "expected then")?;
         let truthy = self.expression(0)?;

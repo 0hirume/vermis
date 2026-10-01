@@ -319,6 +319,28 @@ impl<const MARKUP: bool> Parser<'_, MARKUP> {
         }
     }
 
+    fn condition(&mut self) -> Parsed {
+        if !self.keyword(Keyword::Local) && !self.named(b"const") {
+            return self.expression(0);
+        }
+
+        let constant = self.named(b"const");
+        let start = self.take().span.start;
+        let binding = self.binding()?;
+        self.expect(TokenKind::Byte(b'='), "expected condition initializer")?;
+        let value = self.expression(0)?;
+
+        Ok(self.node(
+            if constant {
+                Kind::Constant
+            } else {
+                Kind::Local
+            },
+            start,
+            [binding, value],
+        ))
+    }
+
     fn binding(&mut self) -> Parsed {
         let start = self.current().span.start;
         let name = self.name()?;
