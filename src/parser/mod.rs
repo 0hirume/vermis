@@ -320,11 +320,12 @@ impl<const MARKUP: bool> Parser<'_, MARKUP> {
     }
 
     fn condition(&mut self) -> Parsed {
-        if !self.keyword(Keyword::Local) && !self.named(b"const") {
+        let constant = self.named(b"const") && self.next() == TokenKind::Name;
+
+        if !self.keyword(Keyword::Local) && !constant {
             return self.expression(0);
         }
 
-        let constant = self.named(b"const");
         let start = self.take().span.start;
         let binding = self.binding()?;
         self.expect(TokenKind::Byte(b'='), "expected condition initializer")?;

@@ -122,6 +122,14 @@ fn condition_bindings() {
             ]
         );
     }
+
+    for source in [
+        "if const then use() elseif const.field then use() end",
+        "return if const then const elseif const() then true else false",
+    ] {
+        let tree = accepted(source);
+        assert!(tree.nodes.iter().all(|node| node.kind != Kind::Constant));
+    }
 }
 
 #[test]
