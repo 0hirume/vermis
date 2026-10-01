@@ -7,6 +7,15 @@ keywords = ["luau", "parser", "syntax"]
 categories = ["parsing", "development-tools"]
 repository = "https://github.com/0hirume/vermis"
 license = "MIT"
+include = [
+  "/README.md",
+  "/src",
+  "/tests",
+  "/vendor/luau/LICENSE.txt",
+  "/vendor/luau/lua_LICENSE.txt",
+  "/vendor/luau/tests/conformance/*.lua",
+  "/vendor/luau/tests/conformance/*.luau",
+]
 
 [dependencies]
 
