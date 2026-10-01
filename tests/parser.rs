@@ -104,12 +104,14 @@ fn condition_bindings() {
         "return if local first: number = value then first elseif const second = other then second else fallback",
     ] {
         let tree = accepted(source);
+
         let bindings: Vec<_> = tree
             .nodes
             .iter()
             .filter(|node| matches!(node.kind, Kind::Local | Kind::Constant))
             .map(|node| {
                 let children = children(&tree, node);
+
                 (node.kind, tree.text(children[0]), tree.text(children[1]))
             })
             .collect();
