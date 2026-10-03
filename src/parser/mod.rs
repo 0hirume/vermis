@@ -23,10 +23,13 @@ pub struct Parser<'source> {
 impl<'source> Parser<'source> {
     /// Tokenizes source and positions the parser at its first non-trivia token.
     pub fn new(source: &'source [u8]) -> Self {
+        let tokens: Vec<_> = Lexer::new(source).collect();
+        let nodes = Vec::with_capacity(tokens.len());
+
         let mut parser = Self {
             source,
-            tokens: Lexer::new(source).collect(),
-            nodes: Vec::new(),
+            tokens,
+            nodes,
             lists: Vec::new(),
             diagnostics: Vec::new(),
             cursor: 0,
