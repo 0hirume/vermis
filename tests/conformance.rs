@@ -23,29 +23,42 @@ fn upstream_programs() {
         let source = fs::read(&path).expect("read corpus program");
         let tree = parse(&source);
 
-        if !tree.diagnostics.is_empty() {
-            failures.push(format!("{}: {:?}", path.display(), tree.diagnostics));
+        if !tree.diagnostics().is_empty() {
+            failures.push(format!("{}: {:?}", path.display(), tree.diagnostics()));
         }
 
         let restored: Vec<_> = tree
-            .tokens
-            .iter()
-            .flat_map(|token| token.bytes(tree.source).iter().copied())
+            .tokens()
+            .flat_map(|token| token.text().iter().copied())
             .collect();
 
         assert_eq!(restored, source, "{}", path.display());
-        assert_eq!(tree.text(tree.root), source.as_slice());
+        assert_eq!(tree.source(), source.as_slice());
+        assert_eq!(tree.root().text(), source.as_slice());
+        assert_eq!(tree.root().parent(), None);
 
-        for node in &tree.nodes {
-            for child in &tree.children[node.children.clone()] {
-                let span = tree.nodes[*child].span;
+        for node in tree.root().descendants() {
+            let span = node.span();
+            assert!(span.start <= span.end && span.end <= source.len());
+
+            if node != tree.root() {
+                let parent = node.parent().unwrap();
+                assert_eq!(parent.children().filter(|child| *child == node).count(), 1);
+            }
+
+            let mut end = span.start;
+
+            for child in node.children() {
+                let child_span = child.span();
 
                 assert!(
-                    node.span.start <= span.start && span.end <= node.span.end,
-                    "{}: {node:?}, child: {:?}",
-                    path.display(),
-                    tree.nodes[*child]
+                    end <= child_span.start && child_span.end <= span.end,
+                    "{}: {node:?}, child: {child:?}",
+                    path.display()
                 );
+
+                assert_eq!(child.parent(), Some(node));
+                end = child_span.end;
             }
         }
     }

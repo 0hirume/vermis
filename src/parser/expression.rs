@@ -1,9 +1,14 @@
+use super::context::Rule;
 use super::{InterpolatedKind, Keyword, Kind, Operator, Parsed, Parser, TokenKind};
 use std::borrow::Cow;
 
 impl<const MARKUP: bool> Parser<'_, MARKUP> {
     pub(super) fn expression(&mut self, minimum: u8) -> Parsed {
-        self.nested(|parser| parser.binary(minimum))
+        self.scoped(Rule::Expression(minimum), |parser| {
+            Ok(parser.required("expression", |parser| {
+                parser.nested(|parser| parser.binary(minimum))
+            }))
+        })
     }
 
     fn binary(&mut self, minimum: u8) -> Parsed {
@@ -18,14 +23,14 @@ impl<const MARKUP: bool> Parser<'_, MARKUP> {
             }
 
             TokenKind::Number => {
-                if !number(self.current().bytes(self.tree.source)) {
-                    return Err(self.error("malformed number"));
+                if !number(self.current().bytes(self.builder.source)) {
+                    self.diagnose(self.error("malformed number"));
                 }
 
                 self.leaf(Kind::Number)
             }
 
-            TokenKind::QuotedString | TokenKind::RawString => self.string()?,
+            TokenKind::QuotedString | TokenKind::RawString => self.string(),
             TokenKind::Interpolated(_) => self.interpolation()?,
             TokenKind::Keyword(Keyword::Nil) => self.leaf(Kind::Nil),
             TokenKind::Keyword(Keyword::True | Keyword::False) => self.leaf(Kind::Boolean),
@@ -43,7 +48,7 @@ impl<const MARKUP: bool> Parser<'_, MARKUP> {
                 self.expect(
                     TokenKind::Keyword(Keyword::Function),
                     "expected function after attributes",
-                )?;
+                );
 
                 self.function(start, Kind::Function, vec![attributes])?
             }
@@ -53,7 +58,9 @@ impl<const MARKUP: bool> Parser<'_, MARKUP> {
             _ => self.primary()?,
         };
 
-        if self.tree.nodes[left].kind != Kind::Unary
+        self.inspect(self.builder.nodes[left].span);
+
+        if self.builder.nodes[left].kind != Kind::Unary
             && self.consume(TokenKind::Operator(Operator::DoubleColon))
         {
             let annotation = self.annotation()?;
@@ -78,20 +85,24 @@ impl<const MARKUP: bool> Parser<'_, MARKUP> {
 
         let mut left = if self.consume(TokenKind::Byte(b'(')) {
             let inner = self.expression(0)?;
-            self.expect(TokenKind::Byte(b')'), "expected closing expression")?;
+            self.expect(TokenKind::Byte(b')'), "expected closing expression");
 
             self.node(Kind::Group, start, [inner])
         } else if MARKUP && self.byte(b'<') {
             self.markup()?
+        } else if self.at(TokenKind::Name) {
+            self.name()
         } else {
-            self.name()?
+            return Err(self.error("expected expression"));
         };
 
         loop {
+            let cursor = self.current().span.start;
+
             left = match self.current().kind {
                 TokenKind::Byte(b'.') => {
                     self.take();
-                    let name = self.name()?;
+                    let name = self.name();
 
                     self.node(Kind::Field, start, [left, name])
                 }
@@ -99,26 +110,26 @@ impl<const MARKUP: bool> Parser<'_, MARKUP> {
                 TokenKind::Byte(b'[') => {
                     self.take();
                     let index = self.expression(0)?;
-                    self.expect(TokenKind::Byte(b']'), "expected closing index")?;
+                    self.expect(TokenKind::Byte(b']'), "expected closing index");
 
                     self.node(Kind::Index, start, [left, index])
                 }
 
                 TokenKind::Byte(b':') => {
                     self.take();
-                    let method = self.name()?;
+                    let method = self.name();
 
                     let types = if self.byte(b'<') && self.next() == TokenKind::Byte(b'<') {
                         self.take();
                         let types = self.type_arguments()?;
-                        self.expect(TokenKind::Byte(b'>'), "expected closing instantiation")?;
+                        self.expect(TokenKind::Byte(b'>'), "expected closing instantiation");
 
                         Some(types)
                     } else {
                         None
                     };
 
-                    let arguments = self.arguments()?;
+                    let arguments = self.required("arguments", Self::arguments);
 
                     self.node(
                         Kind::MethodCall,
@@ -136,19 +147,27 @@ impl<const MARKUP: bool> Parser<'_, MARKUP> {
                 TokenKind::Byte(b'<') if self.next() == TokenKind::Byte(b'<') => {
                     self.take();
                     let arguments = self.type_arguments()?;
-                    self.expect(TokenKind::Byte(b'>'), "expected closing instantiation")?;
+                    self.expect(TokenKind::Byte(b'>'), "expected closing instantiation");
 
                     self.node(Kind::Instantiate, start, [left, arguments])
                 }
 
                 _ => break,
             };
+
+            if self.current().span.start == cursor {
+                break;
+            }
         }
 
         Ok(left)
     }
 
-    fn arguments(&mut self) -> Parsed {
+    pub(super) fn arguments(&mut self) -> Parsed {
+        self.scoped(Rule::Arguments, Self::argument_contents)
+    }
+
+    fn argument_contents(&mut self) -> Parsed {
         let start = self.current().span.start;
 
         let children = match self.current().kind {
@@ -161,13 +180,16 @@ impl<const MARKUP: bool> Parser<'_, MARKUP> {
                     self.expressions()?
                 };
 
-                self.expect(TokenKind::Byte(b')'), "expected closing arguments")?;
+                self.expect(TokenKind::Byte(b')'), "expected closing arguments");
 
                 arguments
             }
 
-            TokenKind::Byte(b'{') => vec![self.nested(Self::table)?],
-            TokenKind::QuotedString | TokenKind::RawString => vec![self.string()?],
+            TokenKind::Byte(b'{') => {
+                vec![self.required("table", |parser| parser.nested(Self::table))]
+            }
+
+            TokenKind::QuotedString | TokenKind::RawString => vec![self.string()],
             _ => return Err(self.error("expected call arguments")),
         };
 
@@ -179,13 +201,13 @@ impl<const MARKUP: bool> Parser<'_, MARKUP> {
 
         let condition = self.condition()?;
 
-        self.expect(TokenKind::Keyword(Keyword::Then), "expected then")?;
+        self.expect(TokenKind::Keyword(Keyword::Then), "expected then");
         let truthy = self.expression(0)?;
 
         let falsy = if self.keyword(Keyword::ElseIf) {
             self.nested(Self::conditional_expression)?
         } else {
-            self.expect(TokenKind::Keyword(Keyword::Else), "expected else")?;
+            self.expect(TokenKind::Keyword(Keyword::Else), "expected else");
 
             self.expression(0)?
         };
@@ -202,12 +224,12 @@ impl<const MARKUP: bool> Parser<'_, MARKUP> {
 
             let key = if self.consume(TokenKind::Byte(b'[')) {
                 let key = self.expression(0)?;
-                self.expect(TokenKind::Byte(b']'), "expected closing field key")?;
-                self.expect(TokenKind::Byte(b'='), "expected field value")?;
+                self.expect(TokenKind::Byte(b']'), "expected closing field key");
+                self.expect(TokenKind::Byte(b'='), "expected field value");
 
                 Some(key)
             } else if self.at(TokenKind::Name) && self.next() == TokenKind::Byte(b'=') {
-                let key = self.name()?;
+                let key = self.name();
                 self.take();
 
                 Some(key)
@@ -224,17 +246,17 @@ impl<const MARKUP: bool> Parser<'_, MARKUP> {
             }
         }
 
-        self.expect(TokenKind::Byte(b'}'), "expected closing table")?;
+        self.expect(TokenKind::Byte(b'}'), "expected closing table");
 
         Ok(self.node(Kind::Table, start, fields))
     }
 
-    pub(super) fn string(&mut self) -> Parsed {
-        if self.at(TokenKind::QuotedString) && !escapes(self.current().bytes(self.tree.source)) {
-            return Err(self.error("malformed string escape"));
+    pub(super) fn string(&mut self) -> usize {
+        if self.at(TokenKind::QuotedString) && !escapes(self.current().bytes(self.builder.source)) {
+            self.diagnose(self.error("malformed string escape"));
         }
 
-        Ok(self.leaf(Kind::String))
+        self.leaf(Kind::String)
     }
 
     fn interpolation(&mut self) -> Parsed {
@@ -250,11 +272,17 @@ impl<const MARKUP: bool> Parser<'_, MARKUP> {
             );
 
             if !matches!(token.kind, TokenKind::Interpolated(_)) {
-                return Err(self.error("expected interpolation segment"));
+                let missing = self.missing(
+                    self.error("expected interpolation segment"),
+                    "interpolation segment",
+                );
+
+                children.push(missing);
+                break;
             }
 
-            if !escapes(token.bytes(self.tree.source)) {
-                return Err(self.error("malformed interpolation escape"));
+            if !escapes(token.bytes(self.builder.source)) {
+                self.diagnose(self.error("malformed interpolation escape"));
             }
 
             children.push(self.leaf(Kind::String));
@@ -284,7 +312,7 @@ impl<const MARKUP: bool> Parser<'_, MARKUP> {
 
                 loop {
                     let begin = self.current().span.start;
-                    let mut children = vec![self.name()?];
+                    let mut children = vec![self.name()];
 
                     if matches!(
                         self.current().kind,
@@ -302,7 +330,7 @@ impl<const MARKUP: bool> Parser<'_, MARKUP> {
                     }
                 }
 
-                self.expect(TokenKind::Byte(b']'), "expected closing attributes")?;
+                self.expect(TokenKind::Byte(b']'), "expected closing attributes");
             }
         }
 

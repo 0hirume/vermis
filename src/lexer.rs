@@ -1,17 +1,201 @@
+use crate::parser::control::Execution;
 use crate::syntax::{InterpolatedKind, Keyword, LexError, Operator, Span, Token, TokenKind};
+use std::{collections::HashSet, fmt, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum BraceKind {
+pub(crate) enum Brace {
     Interpolated,
     Normal,
+}
+
+struct Link {
+    brace: Brace,
+    tail: Option<Arc<Link>>,
+}
+
+impl Drop for Link {
+    fn drop(&mut self) {
+        let mut tail = self.tail.take();
+
+        while let Some(mut link) = tail.and_then(Arc::into_inner) {
+            tail = link.tail.take();
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct Braces {
+    head: Option<Arc<Link>>,
+    length: usize,
+}
+
+impl Braces {
+    pub(crate) fn len(&self) -> usize {
+        self.length
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.length == 0
+    }
+
+    pub(crate) fn equivalent(&self, other: &Self, pairs: &mut HashSet<(usize, usize)>) -> bool {
+        if self.length != other.length {
+            return false;
+        }
+
+        let mut left = self.head.as_ref();
+        let mut right = other.head.as_ref();
+        let mut verified = Vec::new();
+
+        while let (Some(first), Some(second)) = (left, right) {
+            if Arc::ptr_eq(first, second) {
+                break;
+            }
+
+            let pair = (Arc::as_ptr(first) as usize, Arc::as_ptr(second) as usize);
+
+            if pairs.contains(&pair) {
+                break;
+            }
+
+            if first.brace != second.brace {
+                return false;
+            }
+
+            verified.push(pair);
+            left = first.tail.as_ref();
+            right = second.tail.as_ref();
+        }
+
+        pairs.extend(verified);
+
+        true
+    }
+
+    fn push(&mut self, brace: Brace) {
+        self.head = Some(Arc::new(Link {
+            brace,
+            tail: self.head.take(),
+        }));
+
+        self.length += 1;
+    }
+
+    fn pop(&mut self) -> Option<Brace> {
+        let head = self.head.take()?;
+        self.head.clone_from(&head.tail);
+        self.length -= 1;
+
+        Some(head.brace)
+    }
+}
+
+impl<const LENGTH: usize> From<[Brace; LENGTH]> for Braces {
+    fn from(braces: [Brace; LENGTH]) -> Self {
+        let mut stack = Self::default();
+
+        for brace in braces {
+            stack.push(brace);
+        }
+
+        stack
+    }
+}
+
+impl PartialEq for Braces {
+    fn eq(&self, other: &Self) -> bool {
+        if self.length != other.length {
+            return false;
+        }
+
+        let mut left = self.head.as_ref();
+        let mut right = other.head.as_ref();
+
+        while let (Some(first), Some(second)) = (left, right) {
+            if Arc::ptr_eq(first, second) {
+                return true;
+            }
+
+            if first.brace != second.brace {
+                return false;
+            }
+
+            left = first.tail.as_ref();
+            right = second.tail.as_ref();
+        }
+
+        true
+    }
+}
+
+impl Eq for Braces {}
+
+impl fmt::Debug for Braces {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut list = formatter.debug_list();
+        let mut cursor = self.head.as_ref();
+
+        while let Some(link) = cursor {
+            list.entry(&link.brace);
+            cursor = link.tail.as_ref();
+        }
+
+        list.finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Mode {
+    Code,
+    MarkupTag,
+    MarkupChildren,
+    MarkupHole,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct State {
+    pub braces: Braces,
+    pub mode: Mode,
+}
+
+impl State {
+    pub(crate) fn equivalent(&self, other: &Self, pairs: &mut HashSet<(usize, usize)>) -> bool {
+        self.mode == other.mode && self.braces.equivalent(&other.braces, pairs)
+    }
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            braces: Braces::default(),
+            mode: Mode::Code,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Checkpoint {
+    pub cursor: usize,
+    pub state: State,
+    pub finished: bool,
+}
+
+impl Checkpoint {
+    pub(crate) fn equivalent(&self, other: &Self, pairs: &mut HashSet<(usize, usize)>) -> bool {
+        self.cursor == other.cursor
+            && self.finished == other.finished
+            && self.state.equivalent(&other.state, pairs)
+    }
 }
 
 #[derive(Clone)]
 pub struct Lexer<'source> {
     source: &'source [u8],
     cursor: usize,
-    braces: Vec<BraceKind>,
+    braces: Braces,
+    mode: Mode,
     finished: bool,
+    execution: Option<Arc<Execution>>,
 }
 
 impl<'source> Lexer<'source> {
@@ -20,16 +204,11 @@ impl<'source> Lexer<'source> {
         Self {
             source,
             cursor: 0,
-            braces: Vec::new(),
+            braces: Braces::default(),
+            mode: Mode::Code,
             finished: false,
+            execution: None,
         }
-    }
-
-    pub(crate) fn at(source: &'source [u8], cursor: usize) -> Self {
-        let mut lexer = Self::new(source);
-        lexer.cursor = cursor;
-
-        lexer
     }
 
     pub(crate) fn resume(&mut self, cursor: usize) {
@@ -37,11 +216,85 @@ impl<'source> Lexer<'source> {
         self.finished = false;
     }
 
+    pub(crate) fn state(&self) -> State {
+        State {
+            braces: self.braces.clone(),
+            mode: self.mode,
+        }
+    }
+
+    pub(crate) fn checkpoint(&self) -> Checkpoint {
+        Checkpoint {
+            cursor: self.cursor,
+            state: self.state(),
+            finished: self.finished,
+        }
+    }
+
+    pub(crate) fn restore(&mut self, checkpoint: &Checkpoint) {
+        self.cursor = checkpoint.cursor;
+        self.braces.clone_from(&checkpoint.state.braces);
+        self.mode = checkpoint.state.mode;
+        self.finished = checkpoint.finished;
+    }
+
+    pub(crate) fn from_state(source: &'source [u8], cursor: usize, state: &State) -> Self {
+        let mut lexer = Self::new(source);
+
+        lexer.restore(&Checkpoint {
+            cursor,
+            state: state.clone(),
+            finished: false,
+        });
+
+        lexer
+    }
+
+    pub(crate) fn controlled(
+        source: &'source [u8],
+        cursor: usize,
+        state: &State,
+        execution: Option<Arc<Execution>>,
+    ) -> Self {
+        let mut lexer = Self::from_state(source, cursor, state);
+        lexer.execution = execution;
+
+        lexer
+    }
+
+    fn active(&self) -> bool {
+        self.execution
+            .as_ref()
+            .is_none_or(|execution| execution.poll())
+    }
+
+    fn required(&self) -> u8 {
+        self.current().unwrap_or_else(|| {
+            assert!(!self.active(), "scanner requires an input byte");
+
+            0
+        })
+    }
+
+    fn brace(&mut self, brace: Brace) {
+        if self
+            .execution
+            .as_ref()
+            .is_none_or(|execution| execution.depth(self.braces.len().saturating_add(1)))
+        {
+            self.braces.push(brace);
+        }
+    }
+
     fn current(&self) -> Option<u8> {
         self.peek(0)
     }
 
     fn peek(&self, lookahead: usize) -> Option<u8> {
+        if !self.active() {
+            return None;
+        }
+
         self.source.get(self.cursor + lookahead).copied()
     }
 
@@ -50,7 +303,7 @@ impl<'source> Lexer<'source> {
     }
 
     fn scan(&mut self) -> TokenKind {
-        match self.current().expect("scan is only called before eof") {
+        match self.required() {
             byte if is_space(byte) => self.whitespace(),
 
             b'-' => self.minus(),
@@ -148,9 +401,7 @@ impl<'source> Lexer<'source> {
     }
 
     fn long_separator(&mut self) -> Separator {
-        let bracket = self
-            .current()
-            .expect("long separator starts with a bracket");
+        let bracket = self.required();
 
         self.advance();
 
@@ -190,7 +441,7 @@ impl<'source> Lexer<'source> {
         self.advance();
 
         if !self.braces.is_empty() {
-            self.braces.push(BraceKind::Normal);
+            self.brace(Brace::Normal);
         }
 
         TokenKind::Byte(b'{')
@@ -200,11 +451,11 @@ impl<'source> Lexer<'source> {
         self.advance();
 
         match self.braces.pop() {
-            Some(BraceKind::Interpolated) => {
+            Some(Brace::Interpolated) => {
                 self.interpolated_section(InterpolatedKind::Middle, InterpolatedKind::End)
             }
 
-            Some(BraceKind::Normal) | None => TokenKind::Byte(b'}'),
+            Some(Brace::Normal) | None => TokenKind::Byte(b'}'),
         }
     }
 
@@ -257,7 +508,7 @@ impl<'source> Lexer<'source> {
     }
 
     fn quoted_string(&mut self) -> TokenKind {
-        let delimiter = self.current().expect("quoted string starts with a quote");
+        let delimiter = self.required();
         self.advance();
 
         loop {
@@ -330,7 +581,7 @@ impl<'source> Lexer<'source> {
                 Some(b'\\') => self.backslash(),
 
                 Some(b'{') => {
-                    self.braces.push(BraceKind::Interpolated);
+                    self.brace(Brace::Interpolated);
 
                     if self.peek(1) == Some(b'{') {
                         self.advance();
@@ -506,7 +757,7 @@ impl<'source> Lexer<'source> {
     }
 
     fn broken_unicode(&mut self) -> TokenKind {
-        let first = self.current().expect("unicode error starts before eof");
+        let first = self.required();
 
         let (size, prefix) = if first & 0b1110_0000 == 0b1100_0000 {
             (2, first & 0b0001_1111)
@@ -546,7 +797,7 @@ impl Iterator for Lexer<'_> {
     type Item = Token;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.finished {
+        if self.finished || !self.active() {
             return None;
         }
 
@@ -559,6 +810,12 @@ impl Iterator for Lexer<'_> {
         } else {
             self.scan()
         };
+
+        if !self.active() {
+            self.finished = true;
+
+            return None;
+        }
 
         debug_assert!(kind == TokenKind::Eof || self.cursor > start);
 
@@ -596,4 +853,133 @@ fn is_name_start(byte: u8) -> bool {
 
 fn is_name_continue(byte: u8) -> bool {
     is_name_start(byte) || byte.is_ascii_digit()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::control::{Control, ParseError};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn cancelled_long_body_scanner_does_not_advance() {
+        let cancellation = Arc::new(AtomicBool::new(false));
+
+        let execution = Execution::new(&Control {
+            cancellation: Some(cancellation.clone()),
+            ..Control::default()
+        });
+
+        let mut lexer = Lexer::controlled(
+            b"[[long body]]",
+            2,
+            &State::default(),
+            Some(execution.clone()),
+        );
+
+        cancellation.store(true, Ordering::Relaxed);
+
+        assert_eq!(
+            lexer.long_body(0, TokenKind::RawString, LexError::BrokenString),
+            TokenKind::Error(LexError::BrokenString)
+        );
+
+        assert_eq!(lexer.cursor, 2);
+        assert_eq!(execution.error(), Some(ParseError::Cancelled));
+        assert!(lexer.next().is_none());
+    }
+
+    #[test]
+    fn persistent_braces_drop_deep_unique_and_shared_tails_without_recursion() {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(|| {
+                let mut braces = Braces::default();
+
+                for _ in 0..100_000 {
+                    braces.push(Brace::Normal);
+                }
+
+                let snapshot = braces.clone();
+
+                for _ in 0..50_000 {
+                    assert_eq!(braces.pop(), Some(Brace::Normal));
+                }
+
+                assert_eq!(braces.len(), 50_000);
+                assert_eq!(snapshot.len(), 100_000);
+                drop(snapshot);
+                drop(braces);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn equivalent_checkpoints_cache_verified_tails_without_accepting_partial_matches() {
+        let mut left = Braces::default();
+        let mut right = Braces::default();
+        let mut prefixes = Vec::new();
+
+        for index in 0..10_000 {
+            let brace = if index % 2 == 0 {
+                Brace::Normal
+            } else {
+                Brace::Interpolated
+            };
+
+            left.push(brace);
+            right.push(brace);
+            prefixes.push((left.clone(), right.clone()));
+        }
+
+        assert_eq!(left, right);
+        let mut pairs = HashSet::new();
+        assert!(left.equivalent(&right, &mut pairs));
+        assert!(!pairs.is_empty());
+        assert!(pairs.len() <= prefixes.len());
+
+        for (left, right) in &prefixes {
+            assert!(left.equivalent(right, &mut pairs));
+        }
+
+        assert!(pairs.len() <= prefixes.len());
+
+        let old = Checkpoint {
+            cursor: 7,
+            state: State {
+                braces: left,
+                mode: Mode::Code,
+            },
+            finished: false,
+        };
+
+        let mut new = Checkpoint {
+            cursor: 8,
+            state: State {
+                braces: right,
+                mode: Mode::Code,
+            },
+            finished: false,
+        };
+
+        assert!(!old.equivalent(&new, &mut pairs));
+        new.cursor = 7;
+        new.finished = true;
+        assert!(!old.equivalent(&new, &mut pairs));
+        new.finished = false;
+        new.state.mode = Mode::MarkupHole;
+        assert!(!old.equivalent(&new, &mut pairs));
+        new.state.mode = Mode::Code;
+        assert!(old.equivalent(&new, &mut pairs));
+
+        let left = Braces::from([Brace::Interpolated, Brace::Normal, Brace::Normal]);
+        let right = Braces::from([Brace::Normal, Brace::Normal, Brace::Normal]);
+        let mut pairs = HashSet::new();
+        assert!(!left.equivalent(&right, &mut pairs));
+        assert!(pairs.is_empty());
+        assert!(!left.equivalent(&right, &mut pairs));
+        assert!(pairs.is_empty());
+    }
 }

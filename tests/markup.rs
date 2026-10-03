@@ -1,55 +1,58 @@
-use vermis::{Kind, TokenKind, Tree, parse, parse_luaux};
+use vermis::{Kind, TokenKind, TokenView, Tree, parse, parse_luaux};
 
-fn check(source: &[u8]) -> Tree<'_> {
+fn check(source: &[u8]) -> Tree {
     let tree = parse_luaux(source);
     let mut end = 0;
 
-    for (index, token) in tree.tokens.iter().enumerate() {
-        assert_eq!(token.span.start, end);
-        assert!(token.span.end <= source.len());
+    for (position, token) in tree.tokens().enumerate() {
+        let span = token.span();
+        assert_eq!(span.start, end);
+        assert!(span.end <= source.len());
 
-        if token.kind == TokenKind::Eof {
-            assert_eq!(index + 1, tree.tokens.len());
-            assert_eq!(token.span.end, source.len());
+        if token.kind() == TokenKind::Eof {
+            assert_eq!(position + 1, tree.tokens().len());
+            assert_eq!(span.end, source.len());
+            assert_eq!(token.parent(), tree.root());
         } else {
-            assert!(token.span.end > token.span.start);
+            assert!(span.end > span.start);
         }
 
-        end = token.span.end;
+        end = span.end;
     }
 
     assert_eq!(end, source.len());
-    assert_eq!(tree.tokens.last().unwrap().kind, TokenKind::Eof);
-    let mut parents = vec![0; tree.nodes.len()];
-    let mut end = 0;
+    assert_eq!(tree.tokens().next_back().unwrap().kind(), TokenKind::Eof);
+    assert_eq!(tree.root().parent(), None);
 
-    for (index, node) in tree.nodes.iter().enumerate() {
-        assert!(node.span.start <= node.span.end && node.span.end <= source.len());
-        assert_eq!(node.children.start, end);
-        end = node.children.end;
-        let mut position = node.span.start;
+    for node in tree.root().descendants() {
+        let span = node.span();
+        assert!(span.start <= span.end && span.end <= source.len());
+        let mut position = span.start;
 
-        for child in &tree.children[node.children.clone()] {
-            assert!(*child < index);
-            let span = tree.nodes[*child].span;
-            assert!(span.start >= position && span.end <= node.span.end);
-            position = span.end;
-            parents[*child] += 1;
+        if node != tree.root() {
+            let parent = node.parent().unwrap();
+            assert_eq!(parent.children().filter(|child| *child == node).count(), 1);
         }
 
-        assert!(tree.view(index).unwrap().parts().is_some(), "{node:?}");
+        for child in node.children() {
+            let child_span = child.span();
+            assert!(child_span.start >= position && child_span.end <= span.end);
+            assert_eq!(child.parent(), Some(node));
+            position = child_span.end;
+        }
+
+        assert!(node.parts().is_some(), "{node:?}");
     }
 
-    assert_eq!(end, tree.children.len());
+    assert_eq!(tree.source(), source);
+    assert_eq!(tree.root().text(), source);
 
-    assert!(
-        parents
-            .iter()
-            .enumerate()
-            .all(|(index, count)| *count == usize::from(index != tree.root))
+    assert_eq!(
+        tree.tokens()
+            .flat_map(|token| token.text().iter().copied())
+            .collect::<Vec<_>>(),
+        source
     );
-
-    assert_eq!(tree.text(tree.root), source);
 
     tree
 }
@@ -92,13 +95,13 @@ fn grammar() {
         let tree = check(source.as_bytes());
 
         assert!(
-            tree.diagnostics.is_empty(),
+            tree.diagnostics().is_empty(),
             "{source}: {:?}",
-            tree.diagnostics
+            tree.diagnostics()
         );
 
         assert!(
-            !parse(source.as_bytes()).diagnostics.is_empty(),
+            !parse(source.as_bytes()).diagnostics().is_empty(),
             "standard Luau accepted {source}"
         );
     }
@@ -115,7 +118,10 @@ fn grammar() {
         "return <Frame/>()",
         "return <Frame/> :: Element",
     ] {
-        assert!(check(source.as_bytes()).diagnostics.is_empty(), "{source}");
+        assert!(
+            check(source.as_bytes()).diagnostics().is_empty(),
+            "{source}"
+        );
     }
 }
 
@@ -123,15 +129,15 @@ fn grammar() {
 fn raw_text() {
     let source = b"return <Label>\n  don't trim \\{name} \xff \0\n</Label>";
     let tree = check(source);
-    assert!(tree.diagnostics.is_empty(), "{:?}", tree.diagnostics);
+    assert!(tree.diagnostics().is_empty(), "{:?}", tree.diagnostics());
 
     let text = tree
-        .nodes
-        .iter()
-        .position(|node| node.kind == Kind::MarkupText)
+        .root()
+        .descendants()
+        .find(|node| node.kind() == Kind::MarkupText)
         .unwrap();
 
-    assert_eq!(tree.text(text), b"\n  don't trim \\{name} \xff \0\n");
+    assert_eq!(text.text(), b"\n  don't trim \\{name} \xff \0\n");
 }
 
 #[test]
@@ -163,11 +169,24 @@ fn malformed() {
     ] {
         let source = format!("return {markup}");
         let tree = check(source.as_bytes());
-        assert!(!tree.diagnostics.is_empty(), "accepted {source}");
+        assert!(!tree.diagnostics().is_empty(), "accepted {source}");
     }
 
     let tree = check(b"local broken = <Frame ?\nlocal valid = 1\nreturn valid");
-    assert!(tree.nodes.iter().any(|node| node.kind == Kind::Local));
+
+    assert!(
+        tree.root()
+            .descendants()
+            .any(|node| node.kind() == Kind::Local && node.text() == b"local valid = 1")
+    );
+
+    let statement = tree
+        .root()
+        .descendants()
+        .find(|node| node.kind() == Kind::Return)
+        .unwrap();
+
+    assert_eq!(statement.text(), b"return valid");
 }
 
 #[test]
@@ -182,10 +201,26 @@ fn isolation() {
         let source = std::fs::read(path).unwrap();
         let plain = parse(source.as_slice());
         let markup = check(&source);
-        assert_eq!(plain.tokens, markup.tokens);
-        assert_eq!(plain.nodes, markup.nodes);
-        assert_eq!(plain.children, markup.children);
-        assert_eq!(plain.diagnostics, markup.diagnostics);
+
+        assert_eq!(
+            plain.tokens().map(TokenView::data).collect::<Vec<_>>(),
+            markup.tokens().map(TokenView::data).collect::<Vec<_>>()
+        );
+
+        assert_eq!(
+            plain
+                .root()
+                .descendants()
+                .map(|node| (node.kind(), node.span(), node.children().len()))
+                .collect::<Vec<_>>(),
+            markup
+                .root()
+                .descendants()
+                .map(|node| (node.kind(), node.span(), node.children().len()))
+                .collect::<Vec<_>>()
+        );
+
+        assert_eq!(plain.diagnostics(), markup.diagnostics());
     }
 
     for source in [
@@ -199,7 +234,10 @@ fn isolation() {
         "return object:render(<Frame/>)",
         "return (function<Value>(value: Value): Value return value end)(<Frame/>)",
     ] {
-        assert!(check(source.as_bytes()).diagnostics.is_empty(), "{source}");
+        assert!(
+            check(source.as_bytes()).diagnostics().is_empty(),
+            "{source}"
+        );
     }
 }
 
@@ -224,7 +262,7 @@ fn bytes_and_nesting() {
     );
 
     assert!(
-        !check(nested.as_bytes()).diagnostics.is_empty(),
+        !check(nested.as_bytes()).diagnostics().is_empty(),
         "unbounded markup nesting"
     );
 }

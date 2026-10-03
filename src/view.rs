@@ -1,369 +1,363 @@
-use std::{fmt, iter::FusedIterator, slice};
+use std::{fmt, iter::FusedIterator, ops::Range};
 
-use crate::{Kind, Node, Span, Tree};
+use crate::{Kind, Span, Tree, tree::Occurrence};
 
 #[derive(Clone, Copy)]
-pub struct View<'tree, 'source> {
-    tree: &'tree Tree<'source>,
-    index: usize,
+pub struct View<'tree> {
+    pub(crate) tree: &'tree Tree,
+    pub(crate) index: usize,
 }
 
 #[derive(Clone)]
-pub struct Children<'tree, 'source> {
-    tree: &'tree Tree<'source>,
-    indices: slice::Iter<'tree, usize>,
+pub struct Children<'tree> {
+    tree: &'tree Tree,
+    syntax: &'tree crate::tree::Node,
+    ordinal: usize,
+    indices: Range<usize>,
 }
 
 #[derive(Clone, Debug)]
-pub enum Parts<'tree, 'source> {
+pub enum Parts<'tree> {
     Leaf,
 
     Markup {
-        opening: View<'tree, 'source>,
-        children: Option<View<'tree, 'source>>,
-        closing: Option<View<'tree, 'source>>,
+        opening: View<'tree>,
+        children: Option<View<'tree>>,
+        closing: Option<View<'tree>>,
     },
 
     Tag {
-        name: Option<View<'tree, 'source>>,
-        attributes: Option<View<'tree, 'source>>,
+        name: Option<View<'tree>>,
+        attributes: Option<View<'tree>>,
     },
 
     MarkupName {
-        segments: Children<'tree, 'source>,
+        segments: Children<'tree>,
     },
 
     MarkupAttributes {
-        attributes: Children<'tree, 'source>,
+        attributes: Children<'tree>,
     },
 
     MarkupChildren {
-        children: Children<'tree, 'source>,
+        children: Children<'tree>,
     },
 
     MarkupAttribute {
-        name: View<'tree, 'source>,
-        value: Option<View<'tree, 'source>>,
+        name: View<'tree>,
+        value: Option<View<'tree>>,
     },
 
     MarkupSpread {
-        expression: View<'tree, 'source>,
+        expression: View<'tree>,
     },
 
     MarkupInferred {
-        expression: View<'tree, 'source>,
+        expression: View<'tree>,
     },
 
     MarkupExpression {
-        expression: View<'tree, 'source>,
+        expression: View<'tree>,
     },
 
     Root {
-        block: View<'tree, 'source>,
+        block: View<'tree>,
     },
 
     Block {
-        statements: Children<'tree, 'source>,
+        statements: Children<'tree>,
     },
 
     Local {
-        bindings: Children<'tree, 'source>,
-        values: Children<'tree, 'source>,
+        bindings: Children<'tree>,
+        values: Children<'tree>,
     },
 
     Assignment {
-        targets: Children<'tree, 'source>,
-        operator: View<'tree, 'source>,
-        values: Children<'tree, 'source>,
+        targets: Children<'tree>,
+        operator: View<'tree>,
+        values: Children<'tree>,
     },
 
     CallStatement {
-        call: View<'tree, 'source>,
+        call: View<'tree>,
     },
 
     Function {
-        attributes: Option<View<'tree, 'source>>,
-        name: Option<View<'tree, 'source>>,
-        generics: Option<View<'tree, 'source>>,
-        parameters: View<'tree, 'source>,
-        returns: Option<View<'tree, 'source>>,
-        body: Option<View<'tree, 'source>>,
+        attributes: Option<View<'tree>>,
+        name: Option<View<'tree>>,
+        generics: Option<View<'tree>>,
+        parameters: View<'tree>,
+        returns: Option<View<'tree>>,
+        body: Option<View<'tree>>,
     },
 
     FunctionName {
-        path: Children<'tree, 'source>,
-        method: Option<View<'tree, 'source>>,
+        path: Children<'tree>,
+        method: Option<View<'tree>>,
     },
 
     Parameters {
-        parameters: Children<'tree, 'source>,
+        parameters: Children<'tree>,
     },
 
     Binding {
-        name: View<'tree, 'source>,
-        annotation: Option<View<'tree, 'source>>,
+        name: View<'tree>,
+        annotation: Option<View<'tree>>,
     },
 
     Returns {
-        annotation: View<'tree, 'source>,
+        annotation: View<'tree>,
     },
 
     If {
-        branches: Children<'tree, 'source>,
-        otherwise: Option<View<'tree, 'source>>,
+        branches: Children<'tree>,
+        otherwise: Option<View<'tree>>,
     },
 
     Branch {
-        condition: View<'tree, 'source>,
-        body: View<'tree, 'source>,
+        condition: View<'tree>,
+        body: View<'tree>,
     },
 
     Body {
-        body: View<'tree, 'source>,
+        body: View<'tree>,
     },
 
     While {
-        condition: View<'tree, 'source>,
-        body: View<'tree, 'source>,
+        condition: View<'tree>,
+        body: View<'tree>,
     },
 
     Repeat {
-        body: View<'tree, 'source>,
-        condition: View<'tree, 'source>,
+        body: View<'tree>,
+        condition: View<'tree>,
     },
 
     NumericFor {
-        binding: View<'tree, 'source>,
-        start: View<'tree, 'source>,
-        end: View<'tree, 'source>,
-        step: Option<View<'tree, 'source>>,
-        body: View<'tree, 'source>,
+        binding: View<'tree>,
+        start: View<'tree>,
+        end: View<'tree>,
+        step: Option<View<'tree>>,
+        body: View<'tree>,
     },
 
     GenericFor {
-        bindings: Children<'tree, 'source>,
-        values: Children<'tree, 'source>,
-        body: View<'tree, 'source>,
+        bindings: Children<'tree>,
+        values: Children<'tree>,
+        body: View<'tree>,
     },
 
     Return {
-        values: Children<'tree, 'source>,
+        values: Children<'tree>,
     },
 
     Export {
-        attributes: Option<View<'tree, 'source>>,
-        declaration: View<'tree, 'source>,
+        attributes: Option<View<'tree>>,
+        declaration: View<'tree>,
     },
 
     TypeAlias {
-        name: View<'tree, 'source>,
-        generics: Option<View<'tree, 'source>>,
-        annotation: View<'tree, 'source>,
+        name: View<'tree>,
+        generics: Option<View<'tree>>,
+        annotation: View<'tree>,
     },
 
     Declaration {
-        name: View<'tree, 'source>,
-        annotation: View<'tree, 'source>,
+        name: View<'tree>,
+        annotation: View<'tree>,
     },
 
     ClassDeclaration {
-        class: View<'tree, 'source>,
+        class: View<'tree>,
     },
 
     Class {
-        name: View<'tree, 'source>,
-        extends: Option<View<'tree, 'source>>,
-        members: Children<'tree, 'source>,
+        name: View<'tree>,
+        extends: Option<View<'tree>>,
+        members: Children<'tree>,
     },
 
     Property {
-        binding: View<'tree, 'source>,
+        binding: View<'tree>,
     },
 
     Extends {
-        superclass: View<'tree, 'source>,
+        superclass: View<'tree>,
     },
 
     Attributes {
-        attributes: Children<'tree, 'source>,
+        attributes: Children<'tree>,
     },
 
     Attribute {
-        name: &'source [u8],
-        arguments: Option<View<'tree, 'source>>,
+        name: &'tree [u8],
+        arguments: Option<View<'tree>>,
     },
 
     Arguments {
-        values: Children<'tree, 'source>,
+        values: Children<'tree>,
     },
 
     Generics {
-        parameters: Children<'tree, 'source>,
+        parameters: Children<'tree>,
     },
 
     Generic {
-        name: View<'tree, 'source>,
-        default: Option<View<'tree, 'source>>,
+        name: View<'tree>,
+        default: Option<View<'tree>>,
     },
 
     Variadic {
-        annotation: Option<View<'tree, 'source>>,
+        annotation: Option<View<'tree>>,
     },
 
     Unary {
-        operator: View<'tree, 'source>,
-        operand: View<'tree, 'source>,
+        operator: View<'tree>,
+        operand: View<'tree>,
     },
 
     Binary {
-        left: View<'tree, 'source>,
-        operator: View<'tree, 'source>,
-        right: View<'tree, 'source>,
+        left: View<'tree>,
+        operator: View<'tree>,
+        right: View<'tree>,
     },
 
     Group {
-        expression: View<'tree, 'source>,
+        expression: View<'tree>,
     },
 
     Call {
-        callee: View<'tree, 'source>,
-        arguments: View<'tree, 'source>,
+        callee: View<'tree>,
+        arguments: View<'tree>,
     },
 
     MethodCall {
-        receiver: View<'tree, 'source>,
-        method: View<'tree, 'source>,
-        types: Option<View<'tree, 'source>>,
-        arguments: View<'tree, 'source>,
+        receiver: View<'tree>,
+        method: View<'tree>,
+        types: Option<View<'tree>>,
+        arguments: View<'tree>,
     },
 
     Field {
-        receiver: View<'tree, 'source>,
-        name: View<'tree, 'source>,
+        receiver: View<'tree>,
+        name: View<'tree>,
     },
 
     Index {
-        receiver: View<'tree, 'source>,
-        key: View<'tree, 'source>,
+        receiver: View<'tree>,
+        key: View<'tree>,
     },
 
     Instantiate {
-        expression: View<'tree, 'source>,
-        arguments: View<'tree, 'source>,
+        expression: View<'tree>,
+        arguments: View<'tree>,
     },
 
     Assertion {
-        expression: View<'tree, 'source>,
-        annotation: View<'tree, 'source>,
+        expression: View<'tree>,
+        annotation: View<'tree>,
     },
 
     Conditional {
-        condition: View<'tree, 'source>,
-        truthy: View<'tree, 'source>,
-        falsy: View<'tree, 'source>,
+        condition: View<'tree>,
+        truthy: View<'tree>,
+        falsy: View<'tree>,
     },
 
     Interpolation {
-        segments: Children<'tree, 'source>,
+        segments: Children<'tree>,
     },
 
     Table {
-        fields: Children<'tree, 'source>,
+        fields: Children<'tree>,
     },
 
     TableField {
-        key: Option<View<'tree, 'source>>,
-        value: View<'tree, 'source>,
+        key: Option<View<'tree>>,
+        value: View<'tree>,
         indexed: bool,
     },
 
     TypeName {
-        namespace: Option<View<'tree, 'source>>,
-        name: View<'tree, 'source>,
-        arguments: Option<View<'tree, 'source>>,
+        namespace: Option<View<'tree>>,
+        name: View<'tree>,
+        arguments: Option<View<'tree>>,
     },
 
     TypeTable {
-        access: Option<View<'tree, 'source>>,
-        element: Option<View<'tree, 'source>>,
-        fields: Children<'tree, 'source>,
+        access: Option<View<'tree>>,
+        element: Option<View<'tree>>,
+        fields: Children<'tree>,
     },
 
     TypeField {
-        access: Option<View<'tree, 'source>>,
-        key: View<'tree, 'source>,
-        annotation: View<'tree, 'source>,
+        access: Option<View<'tree>>,
+        key: View<'tree>,
+        annotation: View<'tree>,
     },
 
     TypeFunction {
-        attributes: Option<View<'tree, 'source>>,
-        generics: Option<View<'tree, 'source>>,
-        parameters: View<'tree, 'source>,
-        returns: View<'tree, 'source>,
+        attributes: Option<View<'tree>>,
+        generics: Option<View<'tree>>,
+        parameters: View<'tree>,
+        returns: View<'tree>,
     },
 
     TypeGroup {
-        annotation: View<'tree, 'source>,
+        annotation: View<'tree>,
     },
 
     TypePack {
-        types: Children<'tree, 'source>,
+        types: Children<'tree>,
     },
 
     VariadicType {
-        annotation: View<'tree, 'source>,
+        annotation: View<'tree>,
     },
 
     TypeParameter {
-        name: View<'tree, 'source>,
-        annotation: View<'tree, 'source>,
+        name: View<'tree>,
+        annotation: View<'tree>,
     },
 
     TypeArguments {
-        types: Children<'tree, 'source>,
+        types: Children<'tree>,
     },
 
     TypeUnion {
-        types: Children<'tree, 'source>,
+        types: Children<'tree>,
     },
 
     TypeIntersection {
-        types: Children<'tree, 'source>,
+        types: Children<'tree>,
     },
 
     TypeOptional {
-        annotation: View<'tree, 'source>,
+        annotation: View<'tree>,
     },
 
     TypeOf {
-        name: View<'tree, 'source>,
-        expression: View<'tree, 'source>,
+        name: View<'tree>,
+        expression: View<'tree>,
     },
 }
 
-impl<'source> Tree<'source> {
-    #[must_use]
-    pub fn view(&self, index: usize) -> Option<View<'_, 'source>> {
-        self.nodes.get(index)?;
-
-        Some(View { tree: self, index })
+impl Tree {
+    pub(crate) fn view(&self, index: usize) -> View<'_> {
+        View { tree: self, index }
     }
 }
 
-impl<'tree, 'source> View<'tree, 'source> {
+impl<'tree> View<'tree> {
     #[must_use]
-    pub fn index(self) -> usize {
-        self.index
-    }
-
-    #[must_use]
-    pub fn node(self) -> &'tree Node {
-        &self.tree.nodes[self.index]
+    pub(crate) fn node(self) -> Occurrence<'tree> {
+        self.tree.occurrence(self.index)
     }
 
     #[must_use]
     pub fn kind(self) -> Kind {
-        self.node().kind
+        self.node().syntax.kind
     }
 
     #[must_use]
@@ -372,35 +366,46 @@ impl<'tree, 'source> View<'tree, 'source> {
     }
 
     #[must_use]
-    pub fn text(self) -> &'source [u8] {
-        self.span().bytes(self.tree.source)
+    pub fn text(self) -> &'tree [u8] {
+        self.node().syntax.text()
+    }
+
+    pub fn recovery(
+        self,
+    ) -> impl Iterator<Item = crate::parser::context::Expectation> + Clone + 'tree {
+        let occurrence = self.node();
+
+        occurrence
+            .syntax
+            .recovery
+            .iter()
+            .map(move |mut expectation| {
+                expectation.span.start += occurrence.span.start;
+                expectation.span.end += occurrence.span.start;
+
+                expectation
+            })
     }
 
     #[must_use]
-    pub fn children(self) -> Children<'tree, 'source> {
+    pub fn identity(self) -> crate::Identity {
+        crate::Identity::new(std::sync::Arc::clone(&self.node().syntax.identity))
+    }
+
+    #[must_use]
+    pub fn children(self) -> Children<'tree> {
+        let node = self.node();
+
         Children {
             tree: self.tree,
-            indices: self
-                .tree
-                .children
-                .get(self.node().children.clone())
-                .unwrap_or(&[])
-                .iter(),
+            syntax: node.syntax,
+            ordinal: self.index + 1,
+            indices: 0..node.syntax.edges.measure().children,
         }
     }
 
     #[must_use]
-    pub fn parts(self) -> Option<Parts<'tree, 'source>> {
-        if self
-            .tree
-            .children
-            .get(self.node().children.clone())?
-            .iter()
-            .any(|index| *index >= self.tree.nodes.len())
-        {
-            return None;
-        }
-
+    pub fn parts(self) -> Option<Parts<'tree>> {
         match self.kind() {
             Kind::Element
             | Kind::Fragment
@@ -483,6 +488,7 @@ impl<'tree, 'source> View<'tree, 'source> {
             | Kind::Variadic => self.signature(),
 
             Kind::Error
+            | Kind::Missing
             | Kind::MarkupText
             | Kind::MarkupComment
             | Kind::Name
@@ -492,11 +498,11 @@ impl<'tree, 'source> View<'tree, 'source> {
             | Kind::Nil
             | Kind::Operator
             | Kind::Break
-            | Kind::Continue => self.node().children.is_empty().then_some(Parts::Leaf),
+            | Kind::Continue => self.children().is_empty().then_some(Parts::Leaf),
         }
     }
 
-    fn markup(self) -> Option<Parts<'tree, 'source>> {
+    fn markup(self) -> Option<Parts<'tree>> {
         let mut children = self.children();
 
         let parts = match self.kind() {
@@ -544,7 +550,7 @@ impl<'tree, 'source> View<'tree, 'source> {
         children.next().is_none().then_some(parts)
     }
 
-    fn statement(self) -> Option<Parts<'tree, 'source>> {
+    fn statement(self) -> Option<Parts<'tree>> {
         let mut children = self.children();
 
         let parts = match self.kind() {
@@ -672,7 +678,7 @@ impl<'tree, 'source> View<'tree, 'source> {
         children.finish(parts)
     }
 
-    fn expression(self) -> Option<Parts<'tree, 'source>> {
+    fn expression(self) -> Option<Parts<'tree>> {
         let mut children = self.children();
 
         let parts = match self.kind() {
@@ -761,7 +767,7 @@ impl<'tree, 'source> View<'tree, 'source> {
         children.finish(parts)
     }
 
-    fn annotation(self) -> Option<Parts<'tree, 'source>> {
+    fn annotation(self) -> Option<Parts<'tree>> {
         let mut children = self.children();
 
         let parts = match self.kind() {
@@ -852,7 +858,7 @@ impl<'tree, 'source> View<'tree, 'source> {
         children.finish(parts)
     }
 
-    fn signature(self) -> Option<Parts<'tree, 'source>> {
+    fn signature(self) -> Option<Parts<'tree>> {
         let mut children = self.children();
 
         let parts = match self.kind() {
@@ -943,9 +949,11 @@ impl<'tree, 'source> View<'tree, 'source> {
     }
 }
 
-impl<'tree, 'source> Children<'tree, 'source> {
-    fn optional(&mut self, kind: Kind) -> Option<View<'tree, 'source>> {
-        self.clone().next().filter(|child| child.kind() == kind)?;
+impl<'tree> Children<'tree> {
+    fn optional(&mut self, kind: Kind) -> Option<View<'tree>> {
+        self.clone().next().filter(|child| {
+            child.kind() == kind || (kind == Kind::Name && child.kind() == Kind::Missing)
+        })?;
 
         self.next()
     }
@@ -953,63 +961,83 @@ impl<'tree, 'source> Children<'tree, 'source> {
     fn prefix(&mut self, kind: Kind) -> Self {
         let count = self
             .clone()
-            .take_while(|child| child.kind() == kind)
+            .take_while(|child| {
+                child.kind() == kind || (kind == Kind::Name && child.kind() == Kind::Missing)
+            })
             .count();
 
         self.take_front(count)
     }
 
     fn take_front(&mut self, count: usize) -> Self {
-        let (front, rest) = self.indices.as_slice().split_at(count);
-        self.indices = rest.iter();
+        assert!(count <= self.indices.len());
+        let front = self.indices.start..self.indices.start + count;
+        self.indices.start += count;
 
         Self {
             tree: self.tree,
-            indices: front.iter(),
+            syntax: self.syntax,
+            ordinal: self.ordinal,
+            indices: front,
         }
     }
 
-    fn finish(mut self, parts: Parts<'tree, 'source>) -> Option<Parts<'tree, 'source>> {
+    pub(crate) fn get(&self, position: usize) -> Option<View<'tree>> {
+        let (_, _, prefix) = self
+            .syntax
+            .edges
+            .select(position, |measure| measure.children)?;
+
+        Some(self.tree.view(self.ordinal + prefix.nodes))
+    }
+
+    fn is_empty(&self) -> bool {
+        self.indices.is_empty()
+    }
+
+    fn finish(mut self, parts: Parts<'tree>) -> Option<Parts<'tree>> {
         self.next().is_none().then_some(parts)
     }
 }
 
-impl fmt::Debug for View<'_, '_> {
+impl fmt::Debug for View<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("View")
-            .field("index", &self.index)
             .field("kind", &self.kind())
             .field("span", &self.span())
             .finish()
     }
 }
 
-impl fmt::Debug for Children<'_, '_> {
+impl fmt::Debug for Children<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.debug_list().entries(self.clone()).finish()
     }
 }
 
-impl<'tree, 'source> Iterator for Children<'tree, 'source> {
-    type Item = View<'tree, 'source>;
+impl<'tree> Iterator for Children<'tree> {
+    type Item = View<'tree>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.indices.find_map(|index| self.tree.view(*index))
+        let position = self.indices.next()?;
+
+        self.get(position)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (0, Some(self.indices.len()))
+        self.indices.size_hint()
     }
 }
 
-impl DoubleEndedIterator for Children<'_, '_> {
+impl DoubleEndedIterator for Children<'_> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        self.indices
-            .by_ref()
-            .rev()
-            .find_map(|index| self.tree.view(*index))
+        let position = self.indices.next_back()?;
+
+        self.get(position)
     }
 }
 
-impl FusedIterator for Children<'_, '_> {}
+impl FusedIterator for Children<'_> {}
+
+impl ExactSizeIterator for Children<'_> {}
