@@ -1,11 +1,14 @@
 use std::sync::{Arc, atomic::AtomicBool};
 
-use vermis::{Control, Edit, EditError, Limits, ParseError, Resource, Span, parse, parse_with};
+use vermis::{Control, Edit, EditError, Limits, ParseError, Resource, Span, parse};
 
 #[test]
-fn controlled_parses_preserve_losslessness_and_report_cancellation() {
+fn controlled_updates_preserve_losslessness_and_report_cancellation() {
     let source = b"local value = f(1 + 2)\n";
-    let tree = parse_with(source, &Control::default()).unwrap();
+    let original = parse(b"");
+    let tree = original
+        .update_with(Span { start: 0, end: 0 }, source, &Control::default())
+        .unwrap();
     assert_eq!(tree.root().text(), source);
 
     assert_eq!(
@@ -21,8 +24,10 @@ fn controlled_parses_preserve_losslessness_and_report_cancellation() {
     };
 
     assert_eq!(
-        parse_with(source, &control).unwrap_err(),
-        ParseError::Cancelled
+        original
+            .update_with(Span { start: 0, end: 0 }, source, &control)
+            .unwrap_err(),
+        EditError::Parse(ParseError::Cancelled)
     );
 
     assert_eq!(

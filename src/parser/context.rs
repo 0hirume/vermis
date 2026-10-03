@@ -574,7 +574,7 @@ mod tests {
         };
 
         assert!(matches!(
-            crate::parser::controlled(b"return value", &control),
+            controlled(b"return value", &control),
             Err(ParseError::Cancelled)
         ));
     }

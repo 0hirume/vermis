@@ -14,7 +14,7 @@ mod view;
 pub use analysis::{AnalysisError, Identity, Memo};
 pub use diagnostics::{DiagnosticCode, Severity};
 pub use document::{Document, DocumentError, Revision, Snapshot};
-pub use lexer::{Lexer, classify_name};
+pub use lexer::Lexer;
 pub use navigation::{Descendants, Element, Elements, TokenView, Tokens};
 pub use parser::context::{Expectation, Expected};
 pub use parser::control::{Control, Limits, ParseError, Resource};
@@ -24,10 +24,3 @@ pub use syntax::{InterpolatedKind, Keyword, LexError, Operator, Span, Token, Tok
 pub use tree::{Diagnostic, Kind, Tree};
 pub use update::{Edit, EditError};
 pub use view::{Children, Parts, View};
-
-/// # Errors
-///
-/// Returns an error if parsing is cancelled or exceeds a configured resource limit.
-pub fn parse_with(source: &[u8], control: &Control) -> Result<Tree, ParseError> {
-    parser::controlled(source, control)
-}

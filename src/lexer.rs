@@ -808,7 +808,7 @@ enum Separator {
 }
 
 #[must_use]
-pub fn classify_name(name: &[u8]) -> TokenKind {
+fn classify_name(name: &[u8]) -> TokenKind {
     match Keyword::from_name(name) {
         Some(keyword) => TokenKind::Keyword(keyword),
         None => TokenKind::Name,

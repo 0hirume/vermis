@@ -9,7 +9,7 @@ use crate::lexer::State;
 use crate::{Diagnostic, InterpolatedKind, Keyword, Kind, Operator, Span, Token, TokenKind, Tree};
 use builder::{Builder, Node};
 use context::{Boundary, Context, Expectation, Expected, Rule};
-use control::{Control, Execution, Ledger, ParseError};
+use control::{Execution, Ledger, ParseError};
 use std::{cell::RefCell, sync::Arc};
 
 type Parsed = Result<usize, Diagnostic>;
@@ -49,18 +49,6 @@ struct Parser<'source> {
 #[must_use]
 pub fn parse(source: &[u8]) -> Tree {
     parse_source(source, None).finish(crate::source::Source::from(source))
-}
-
-pub(crate) fn controlled(source: &[u8], control: &Control) -> Result<Tree, ParseError> {
-    let execution = Execution::new(control);
-    let builder = controlled_in(source, &execution)?;
-
-    Tree::freeze(
-        builder,
-        crate::source::Source::from(source),
-        None,
-        Some(&execution),
-    )
 }
 
 pub(crate) fn controlled_in<'source>(
