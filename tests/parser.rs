@@ -105,6 +105,28 @@ fn condition_bindings() {
 }
 
 #[test]
+fn excess_constant_initializers() {
+    for keyword in ["const", "export const"] {
+        let source = format!("{keyword} first, second = 17, 23, 41");
+        let tree = check(source.as_bytes());
+
+        assert_eq!(tree.diagnostics.len(), 1, "{source}");
+
+        assert_eq!(
+            tree.diagnostics[0].message,
+            "too many constant initializers"
+        );
+    }
+
+    for source in [
+        "local first, second = 17, 23, 41",
+        "const first, second = 17, 23, produce()",
+    ] {
+        accepted(source);
+    }
+}
+
+#[test]
 fn grammar() {
     for source in [
         "if const ready = value then return ready elseif other then use() else fallback() end",

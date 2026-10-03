@@ -172,6 +172,8 @@ impl Parser<'_> {
 
             if entries.len() < bindings.0.len() && !expandable {
                 self.diagnose(self.error("not enough constant initializers"));
+            } else if entries.len() > bindings.0.len() && !expandable {
+                self.diagnose(self.error("too many constant initializers"));
             }
         }
 
