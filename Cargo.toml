@@ -17,8 +17,6 @@ include = [
   "/vendor/luau/tests/conformance/*.luau",
 ]
 
-[dependencies]
-
 [lints.clippy]
 all = { level = "deny", priority = -1 }
 cargo = { level = "deny", priority = -1 }
