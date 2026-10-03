@@ -364,7 +364,7 @@ impl Measured for RecoveryRun {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct Recovery {
     runs: Sequence<RecoveryRun>,
 }
@@ -484,7 +484,7 @@ pub(crate) struct Node {
     pub tokens: Sequence<Arc<Leaf>>,
     pub count: usize,
     pub maximum_depth: usize,
-    pub boundaries: Arc<[Contract]>,
+    pub boundaries: Box<[Contract]>,
     pub recovery: Recovery,
     pub positions: Positions,
     pub events: Events,
@@ -549,28 +549,11 @@ impl Measured for Syntax {
 }
 
 impl Node {
-    pub(crate) fn new(kind: Kind, edges: Sequence<Syntax>) -> Arc<Self> {
-        let mut tokens = Sequence::default();
-
-        for edge in edges.iter() {
-            tokens = tokens.concat(&match edge {
-                Syntax::Node(node) => node.tokens.clone(),
-                Syntax::Token(leaf) => Sequence::singleton(Arc::clone(leaf)),
-            });
-        }
-
-        let mut node = Self::assembled(kind, edges, tokens);
-        let syntax = Arc::get_mut(&mut node).expect("new syntax is unique");
-
-        syntax.events = Events::new(
-            std::iter::empty(),
-            syntax.edges.iter().filter_map(|edge| match edge {
-                Syntax::Node(child) => Some((Arc::clone(child), 0)),
-                Syntax::Token(_) => None,
-            }),
-        );
-
-        node
+    fn tokens(edges: &Sequence<Syntax>) -> Sequence<Arc<Leaf>> {
+        Sequence::concatenate(edges.iter().map(|edge| match edge {
+            Syntax::Node(node) => node.tokens.clone(),
+            Syntax::Token(leaf) => Sequence::singleton(Arc::clone(leaf)),
+        }))
     }
 
     fn assembled(kind: Kind, edges: Sequence<Syntax>, tokens: Sequence<Arc<Leaf>>) -> Arc<Self> {
@@ -580,9 +563,9 @@ impl Node {
             width: edges.measure().width,
             count: edges.measure().nodes + 1,
             maximum_depth: edges.measure().maximum_depth,
-            boundaries: Arc::from([]),
-            recovery: Recovery::new(edges.measure().width, std::iter::empty()),
-            positions: Positions::new(edges.measure().width, std::iter::empty()),
+            boundaries: Box::default(),
+            recovery: Recovery::default(),
+            positions: Positions::default(),
             events: Events::default(),
             inspected: edges.measure().inspected,
             edges,
@@ -604,14 +587,7 @@ impl Node {
         let children =
             self.edges.prefix(range.start).children..self.edges.prefix(range.end).children;
 
-        let mut tokens = Sequence::default();
-
-        for edge in replacement.iter() {
-            tokens = tokens.concat(&match edge {
-                Syntax::Node(node) => node.tokens.clone(),
-                Syntax::Token(leaf) => Sequence::singleton(Arc::clone(leaf)),
-            });
-        }
+        let tokens = Self::tokens(replacement);
 
         let mut node = Self::assembled(
             self.kind,
@@ -625,7 +601,7 @@ impl Node {
             .boundaries
             .iter()
             .map(|boundary| boundary.splice(edit, replacement_width))
-            .collect::<Option<Arc<[_]>>>()?;
+            .collect::<Option<Box<[_]>>>()?;
 
         syntax.recovery = self.recovery.splice(edit, replacement_width)?;
         syntax.positions = self.positions.splice(edit, replacement_width)?;
@@ -1379,7 +1355,9 @@ pub(crate) fn compose(
         cursor += 1;
     }
 
-    let node = Node::new(kind, edges.into_iter().collect());
+    let edges = edges.into_iter().collect();
+    let tokens = Node::tokens(&edges);
+    let node = Node::assembled(kind, edges, tokens);
     assert_eq!(node.width, span.len());
 
     node
@@ -1389,6 +1367,26 @@ pub(crate) fn compose(
 mod tests {
     use super::*;
     use crate::lexer::State;
+
+    impl Node {
+        fn new(kind: Kind, edges: Sequence<Syntax>) -> Arc<Self> {
+            let tokens = Self::tokens(&edges);
+            let mut node = Self::assembled(kind, edges, tokens);
+            let syntax = Arc::get_mut(&mut node).expect("new syntax is unique");
+            syntax.recovery = Recovery::new(syntax.width, std::iter::empty());
+            syntax.positions = Positions::new(syntax.width, std::iter::empty());
+
+            syntax.events = Events::new(
+                std::iter::empty(),
+                syntax.edges.iter().filter_map(|edge| match edge {
+                    Syntax::Node(child) => Some((Arc::clone(child), 0)),
+                    Syntax::Token(_) => None,
+                }),
+            );
+
+            node
+        }
+    }
 
     fn leaf(kind: TokenKind, source: &[u8]) -> Arc<Leaf> {
         Arc::new(Leaf {
@@ -1558,7 +1556,7 @@ mod tests {
         let mut original = Node::new(Kind::Root, edges);
         let syntax = Arc::get_mut(&mut original).unwrap();
 
-        syntax.boundaries = Arc::from([Contract::freeze(
+        syntax.boundaries = Box::from([Contract::freeze(
             Boundary {
                 context: Context {
                     rule: Rule::Expression(0),
@@ -1766,7 +1764,7 @@ mod tests {
 
         let syntax = Arc::get_mut(&mut first).unwrap();
 
-        syntax.boundaries = Arc::from([Contract::freeze(
+        syntax.boundaries = Box::from([Contract::freeze(
             Boundary {
                 context: Context {
                     rule: Rule::Expression(0),
@@ -1952,7 +1950,7 @@ mod tests {
             let mut node = Node::new(Kind::Name, Sequence::singleton(Syntax::Token(token)));
             let syntax = Arc::get_mut(&mut node).unwrap();
 
-            syntax.boundaries = Arc::from([Contract::freeze(
+            syntax.boundaries = Box::from([Contract::freeze(
                 Boundary {
                     context: Context {
                         rule: Rule::Expression(0),

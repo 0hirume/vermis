@@ -358,6 +358,31 @@ impl<T: Measured> Sequence<T> {
         }
     }
 
+    pub(crate) fn concatenate(values: impl IntoIterator<Item = Self>) -> Self {
+        fn build<T: Measured>(values: &[Arc<Branch<T>>]) -> Arc<Branch<T>> {
+            if values.len() == 1 {
+                return Arc::clone(&values[0]);
+            }
+
+            let middle = values.len() / 2;
+
+            join(build(&values[..middle]), build(&values[middle..]))
+        }
+
+        let mut values = values.into_iter().filter_map(|sequence| sequence.root);
+        let Some(first) = values.next() else {
+            return Self::default();
+        };
+        let Some(second) = values.next() else {
+            return Self { root: Some(first) };
+        };
+        let values: Vec<_> = [first, second].into_iter().chain(values).collect();
+
+        Self {
+            root: Some(build(&values)),
+        }
+    }
+
     pub(crate) fn slice(&self, range: Range<usize>) -> Self {
         fn extract<T: Measured>(branch: &Arc<Branch<T>>, range: Range<usize>) -> Sequence<T> {
             if range.is_empty() {
@@ -466,24 +491,7 @@ impl<T: Measured> Sequence<T> {
 
 impl<T: Measured> FromIterator<T> for Sequence<T> {
     fn from_iter<I: IntoIterator<Item = T>>(values: I) -> Self {
-        fn build<T: Measured>(values: &[Arc<Branch<T>>]) -> Arc<Branch<T>> {
-            if values.len() == 1 {
-                return Arc::clone(&values[0]);
-            }
-
-            let middle = values.len() / 2;
-
-            fork(build(&values[..middle]), build(&values[middle..]))
-        }
-
-        let values: Vec<_> = values
-            .into_iter()
-            .map(|value| Arc::new(Branch::Leaf(value)))
-            .collect();
-
-        Self {
-            root: (!values.is_empty()).then(|| build(&values)),
-        }
+        Self::concatenate(values.into_iter().map(Self::singleton))
     }
 }
 
