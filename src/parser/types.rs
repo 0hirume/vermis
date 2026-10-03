@@ -1,518 +1,706 @@
-use super::context::Rule;
-use super::{Keyword, Kind, Operator, Parsed, Parser, TokenKind};
+use super::Parser;
+use crate::token::{Keyword, Symbol, TokenKind};
+use crate::tree::{Diagnostic, ListEntry, NodeIndex, NodeKind, TokenIndex};
 
 impl Parser<'_> {
-    pub(super) fn annotation(&mut self) -> Parsed {
+    /// Parses a type annotation.
+    pub fn annotation(&mut self) -> NodeIndex {
         self.annotation_context(false, false)
     }
 
-    pub(super) fn declaration_annotation(&mut self) -> Parsed {
+    /// Parses a declaration annotation, allowing function type attributes.
+    pub fn declaration_annotation(&mut self) -> NodeIndex {
         self.annotation_context(false, true)
     }
 
-    pub(super) fn type_argument(&mut self) -> Parsed {
+    /// Parses a type argument, including type packs.
+    pub fn type_argument(&mut self) -> NodeIndex {
         self.annotation_context(true, false)
     }
 
-    pub(super) fn annotation_context(&mut self, allow_pack: bool, declaration: bool) -> Parsed {
-        self.scoped(
-            Rule::Annotation {
-                allow_pack,
-                declaration,
-            },
-            |parser| {
-                Ok(parser.required("annotation", |parser| {
-                    if allow_pack
-                        && (parser.at(TokenKind::Operator(Operator::Ellipsis))
-                            || (parser.at(TokenKind::Name)
-                                && parser.next() == TokenKind::Operator(Operator::Ellipsis)))
-                    {
-                        parser.pack()
-                    } else {
-                        parser.nested(|parser| Ok(parser.composite(allow_pack, declaration)))
-                    }
-                }))
-            },
-        )
+    fn annotation_context(&mut self, allow_pack: bool, declaration: bool) -> NodeIndex {
+        self.required("annotation", |parser| {
+            parser.nested(|parser| {
+                if allow_pack && parser.at_pack() {
+                    Ok(parser.pack())
+                } else {
+                    Ok(parser.composite(allow_pack, declaration))
+                }
+            })
+        })
     }
 
-    pub(super) fn pack(&mut self) -> Parsed {
-        let start = self.current().span.start;
+    fn at_pack(&self) -> bool {
+        self.at(TokenKind::Symbol(Symbol::Ellipsis))
+            || (self.at(TokenKind::Name) && self.lookahead() == TokenKind::Symbol(Symbol::Ellipsis))
+    }
 
-        if self.consume(TokenKind::Operator(Operator::Ellipsis)) {
-            let annotation = self.annotation()?;
+    pub(super) fn pack(&mut self) -> NodeIndex {
+        let start = self.position();
 
-            Ok(self.node(Kind::VariadicType, start, [annotation]))
+        if let Some(ellipsis) = self.consume(TokenKind::Symbol(Symbol::Ellipsis)) {
+            let annotation = self.annotation();
+
+            self.append_node(
+                start,
+                NodeKind::VariadicType {
+                    ellipsis,
+                    annotation,
+                },
+            )
         } else {
             let name = self.name();
 
-            self.expect(
-                TokenKind::Operator(Operator::Ellipsis),
-                "expected generic pack",
-            );
+            let ellipsis =
+                self.expect(TokenKind::Symbol(Symbol::Ellipsis), "expected generic pack");
 
-            Ok(self.node(Kind::GenericPack, start, [name]))
+            self.append_node(start, NodeKind::GenericPack { name, ellipsis })
         }
     }
 
-    fn composite(&mut self, allow_pack: bool, declaration: bool) -> usize {
-        let start = self.current().span.start;
+    fn composite(&mut self, allow_pack: bool, declaration: bool) -> NodeIndex {
+        let start = self.position();
 
-        let leading = if self.byte(b'|') || self.byte(b'&') {
-            Some(self.take().kind)
+        let leading = if matches!(
+            self.current().kind,
+            TokenKind::Symbol(Symbol::Pipe | Symbol::Ampersand)
+        ) {
+            Some(self.take())
         } else {
             None
         };
 
-        let mut left = self.required("annotation", |parser| {
+        let left = self.required("annotation", |parser| {
             parser.simple_type(
                 allow_pack && leading.is_none(),
                 declaration && leading.is_none(),
             )
         });
 
-        self.inspect(self.builder.nodes[left].span);
-
-        if self.builder.nodes[left].kind == Kind::TypePack {
+        if matches!(self.node(left).kind, NodeKind::TypePack { .. }) {
             return left;
         }
 
-        if let Some(token) = leading {
-            left = self.node(
-                if token == TokenKind::Byte(b'|') {
-                    Kind::TypeUnion
-                } else {
-                    Kind::TypeIntersection
-                },
-                start,
-                [left],
-            );
+        self.type_suffix(start, left, leading)
+    }
+
+    fn type_suffix(
+        &mut self,
+        start: TokenIndex,
+        mut left: NodeIndex,
+        leading: Option<TokenIndex>,
+    ) -> NodeIndex {
+        let mut separator = leading.map(|token| self.tokens[token.0].kind);
+
+        if let Some(operator) = leading {
+            let kind = if separator == Some(TokenKind::Symbol(Symbol::Pipe)) {
+                NodeKind::TypeUnion {
+                    left: None,
+                    operator,
+                    right: left,
+                }
+            } else {
+                NodeKind::TypeIntersection {
+                    left: None,
+                    operator,
+                    right: left,
+                }
+            };
+
+            left = self.append_node(start, kind);
         }
 
-        let mut separator = leading;
-
         loop {
-            if self.byte(b'?') {
-                if separator == Some(TokenKind::Byte(b'&')) {
-                    self.diagnose(self.error("optional intersection requires parentheses"));
+            match self.current().kind {
+                TokenKind::Symbol(Symbol::QuestionMark) => {
+                    if separator == Some(TokenKind::Symbol(Symbol::Ampersand)) {
+                        self.diagnose(self.error("optional intersection requires parentheses"));
+                    }
+
+                    separator = Some(TokenKind::Symbol(Symbol::Pipe));
+                    let question_mark = self.take();
+
+                    left = self.append_node(
+                        start,
+                        NodeKind::TypeOptional {
+                            annotation: left,
+                            question_mark,
+                        },
+                    );
                 }
 
-                separator = Some(TokenKind::Byte(b'|'));
-                self.take();
-                left = self.node(Kind::TypeOptional, start, [left]);
-            } else if self.byte(b'|') || self.byte(b'&') {
-                let token = self.take().kind;
+                kind @ TokenKind::Symbol(Symbol::Pipe | Symbol::Ampersand) => {
+                    if separator.is_some_and(|previous| previous != kind) {
+                        self.diagnose(
+                            self.error("mixed union and intersection requires parentheses"),
+                        );
+                    }
 
-                if separator.is_some_and(|previous| previous != token) {
-                    self.diagnose(self.error("mixed union and intersection requires parentheses"));
-                }
+                    separator = Some(kind);
+                    let operator = self.take();
 
-                separator = Some(token);
+                    let right = self.required("annotation", |parser| {
+                        parser.nested(|parser| parser.simple_type(false, false))
+                    });
 
-                let right = self.required("annotation", |parser| {
-                    parser.nested(|parser| parser.simple_type(false, false))
-                });
-
-                left = self.node(
-                    if token == TokenKind::Byte(b'|') {
-                        Kind::TypeUnion
+                    let kind = if kind == TokenKind::Symbol(Symbol::Pipe) {
+                        NodeKind::TypeUnion {
+                            left: Some(left),
+                            operator,
+                            right,
+                        }
                     } else {
-                        Kind::TypeIntersection
-                    },
-                    start,
-                    [left, right],
-                );
-            } else {
-                break;
+                        NodeKind::TypeIntersection {
+                            left: Some(left),
+                            operator,
+                            right,
+                        }
+                    };
+
+                    left = self.append_node(start, kind);
+                }
+
+                _ => break,
             }
         }
 
         left
     }
 
-    fn simple_type(&mut self, allow_pack: bool, declaration: bool) -> Parsed {
-        let start = self.current().span.start;
+    fn simple_type(
+        &mut self,
+        allow_pack: bool,
+        declaration: bool,
+    ) -> Result<NodeIndex, Diagnostic> {
+        let start = self.position();
 
-        match self.current().kind {
-            TokenKind::Keyword(Keyword::Nil) => Ok(self.leaf(Kind::Nil)),
-            TokenKind::Keyword(Keyword::True | Keyword::False) => Ok(self.leaf(Kind::Boolean)),
-            TokenKind::QuotedString | TokenKind::RawString => Ok(self.string()),
-            TokenKind::Byte(b'{') => self.type_table(declaration),
-            TokenKind::Byte(b'(' | b'<') => self.function_type(allow_pack),
+        let node = match self.current().kind {
+            TokenKind::Keyword(Keyword::Nil) => {
+                let token = self.take();
 
-            TokenKind::Attribute | TokenKind::AttributeOpen => {
+                self.append_node(start, NodeKind::Nil { token })
+            }
+
+            TokenKind::Keyword(Keyword::True | Keyword::False) => {
+                let token = self.take();
+
+                self.append_node(start, NodeKind::Boolean { token })
+            }
+
+            TokenKind::QuotedString | TokenKind::RawString => self.string(),
+            TokenKind::Symbol(Symbol::LeftBrace) => self.type_table(declaration),
+
+            TokenKind::Symbol(Symbol::LeftParenthesis | Symbol::LessThan) => {
+                self.function_type(allow_pack, None)
+            }
+
+            TokenKind::Attribute | TokenKind::Symbol(Symbol::AttributeOpen) => {
                 if !declaration {
                     self.diagnose(self.error("function type attributes require a declaration"));
                 }
 
-                let attributes = self.attributes()?;
-                let function = self.function_type(false)?;
+                let attributes = self.attributes();
 
-                self.inspect(self.builder.nodes[function].span);
-
-                if self.builder.nodes[function].kind != Kind::TypeFunctionExpression {
-                    self.builder.nodes[function].kind = Kind::Parameters;
-
-                    let returns = self.missing(
-                        self.error("expected attributed function type"),
-                        "annotation",
-                    );
-
-                    return Ok(self.node(
-                        Kind::TypeFunctionExpression,
-                        start,
-                        [attributes, function, returns],
-                    ));
-                }
-
-                self.builder.nodes[function].span.start = start;
-                self.prepend(function, attributes);
-
-                Ok(function)
+                self.function_type(false, Some(attributes))
             }
 
-            TokenKind::Name => {
-                let typeof_expression =
-                    self.named(b"typeof") && self.next() != TokenKind::Byte(b'.');
+            TokenKind::Name => self.type_reference(),
 
-                let name = self.name();
+            _ => return Err(self.error("expected type")),
+        };
 
-                if typeof_expression {
-                    self.expect(TokenKind::Byte(b'('), "expected typeof expression");
-                    let expression = self.expression(0)?;
-                    self.expect(TokenKind::Byte(b')'), "expected closing typeof");
+        Ok(node)
+    }
 
-                    return Ok(self.node(Kind::TypeOf, start, [name, expression]));
-                }
+    fn type_reference(&mut self) -> NodeIndex {
+        let start = self.position();
 
-                let member = if self.consume(TokenKind::Byte(b'.')) {
-                    Some(self.name())
-                } else {
-                    None
-                };
+        if self.named(b"typeof") && self.lookahead() != TokenKind::Symbol(Symbol::Dot) {
+            let keyword = self.take();
 
-                let arguments = if self.byte(b'<') {
-                    Some(self.type_arguments()?)
-                } else {
-                    None
-                };
+            let opening = self.expect(
+                TokenKind::Symbol(Symbol::LeftParenthesis),
+                "expected typeof expression",
+            );
 
-                Ok(self.node(
-                    Kind::TypeName,
-                    start,
-                    [name].into_iter().chain(member).chain(arguments),
-                ))
-            }
+            let expression = self.expression();
 
-            _ => Err(self.error("expected type")),
+            let closing = self.expect(
+                TokenKind::Symbol(Symbol::RightParenthesis),
+                "expected closing typeof",
+            );
+
+            return self.append_node(
+                start,
+                NodeKind::TypeOf {
+                    keyword,
+                    opening,
+                    expression,
+                    closing,
+                },
+            );
         }
+
+        let first = self.name();
+        let dot = self.consume(TokenKind::Symbol(Symbol::Dot));
+
+        let (namespace, name) = if dot.is_some() {
+            (Some(first), self.name())
+        } else {
+            (None, first)
+        };
+
+        let arguments = if self.at(TokenKind::Symbol(Symbol::LessThan)) {
+            Some(self.type_arguments())
+        } else {
+            None
+        };
+
+        self.append_node(
+            start,
+            NodeKind::TypeName {
+                namespace,
+                dot,
+                name,
+                arguments,
+            },
+        )
     }
 
-    pub(super) fn type_arguments(&mut self) -> Parsed {
-        self.scoped(Rule::TypeArguments, Self::type_argument_contents)
-    }
-
-    fn type_argument_contents(&mut self) -> Parsed {
-        let start = self.current().span.start;
-        self.expect(TokenKind::Byte(b'<'), "expected type arguments");
+    pub(super) fn type_arguments(&mut self) -> NodeIndex {
+        let start = self.position();
+        let opening = self.take();
         let mut arguments = Vec::new();
 
-        if !self.byte(b'>') {
-            arguments.push(self.type_argument()?);
+        if !self.at(TokenKind::Symbol(Symbol::GreaterThan)) {
+            loop {
+                let node = self.type_argument();
+                let separator = self.consume(TokenKind::Symbol(Symbol::Comma));
+                arguments.push(ListEntry { node, separator });
 
-            while self.consume(TokenKind::Byte(b',')) {
-                arguments.push(self.type_argument()?);
+                if separator.is_none() {
+                    break;
+                }
             }
         }
 
-        self.expect(TokenKind::Byte(b'>'), "expected closing type arguments");
+        let closing = self.expect(
+            TokenKind::Symbol(Symbol::GreaterThan),
+            "expected closing type arguments",
+        );
 
-        Ok(self.node(Kind::TypeArguments, start, arguments))
+        let arguments = self.append_list(arguments);
+
+        self.append_node(
+            start,
+            NodeKind::TypeArguments {
+                opening,
+                arguments,
+                closing,
+            },
+        )
     }
 
-    pub(super) fn generics(&mut self, defaults: bool) -> Parsed {
-        self.scoped(Rule::Generics { defaults }, |parser| {
-            parser.generic_contents(defaults)
-        })
+    pub(super) fn instantiation_arguments(&mut self) -> NodeIndex {
+        let start = self.position();
+        let opening = self.take();
+        let arguments = self.type_arguments();
+
+        let closing = self.expect(
+            TokenKind::Symbol(Symbol::GreaterThan),
+            "expected closing instantiation",
+        );
+
+        self.append_node(
+            start,
+            NodeKind::InstantiationArguments {
+                opening,
+                arguments,
+                closing,
+            },
+        )
     }
 
-    fn generic_contents(&mut self, defaults: bool) -> Parsed {
-        let start = self.take().span.start;
+    /// Parses generic parameters, permitting defaults when requested.
+    pub fn generics(&mut self, defaults: bool) -> NodeIndex {
+        let start = self.position();
+
+        let Some(opening) = self.consume(TokenKind::Symbol(Symbol::LessThan)) else {
+            return self.missing("generics", self.error("expected generics"));
+        };
+
         let mut parameters = Vec::new();
         let mut packs = false;
         let mut defaulted = false;
 
         loop {
-            let begin = self.current().span.start;
-            let mut children = vec![self.name()];
-            let pack = self.consume(TokenKind::Operator(Operator::Ellipsis));
+            let begin = self.position();
+            let name = self.name();
+            let ellipsis = self.consume(TokenKind::Symbol(Symbol::Ellipsis));
 
-            if packs && !pack {
+            if packs && ellipsis.is_none() {
                 self.diagnose(self.error("type parameters must precede packs"));
             }
 
-            packs |= pack;
+            packs |= ellipsis.is_some();
+            let assignment = self.consume(TokenKind::Symbol(Symbol::Assignment));
 
-            if self.consume(TokenKind::Byte(b'=')) {
+            let default = if assignment.is_some() {
                 if !defaults {
                     self.diagnose(self.error("generic defaults are only allowed in type aliases"));
                 }
 
                 defaulted = true;
 
-                let default = if pack {
-                    self.type_argument()?
+                let default = if ellipsis.is_some() {
+                    self.type_argument()
                 } else {
-                    self.annotation()?
+                    self.annotation()
                 };
 
-                if pack {
-                    self.inspect(self.builder.nodes[default].span);
-                }
-
-                if pack
+                if ellipsis.is_some()
                     && !matches!(
-                        self.builder.nodes[default].kind,
-                        Kind::TypePack | Kind::GenericPack | Kind::VariadicType
+                        self.node(default).kind,
+                        NodeKind::TypePack { .. }
+                            | NodeKind::GenericPack { .. }
+                            | NodeKind::VariadicType { .. }
+                            | NodeKind::Missing { .. }
                     )
                 {
                     self.diagnose(self.error("expected type pack default"));
                 }
 
-                children.push(default);
+                Some(default)
             } else if defaulted {
-                children
-                    .push(self.missing(self.error("expected generic default"), "generic default"));
-            }
-
-            parameters.push(self.node(
-                if pack {
-                    Kind::GenericPack
-                } else {
-                    Kind::Generic
-                },
-                begin,
-                children,
-            ));
-
-            if !self.consume(TokenKind::Byte(b',')) {
-                break;
-            }
-        }
-
-        self.expect(TokenKind::Byte(b'>'), "expected closing generics");
-
-        Ok(self.node(Kind::Generics, start, parameters))
-    }
-
-    pub(super) fn type_parameters(&mut self) -> Parsed {
-        self.scoped(
-            Rule::Parameters { types: true },
-            Self::type_parameter_contents,
-        )
-    }
-
-    fn type_parameter_contents(&mut self) -> Parsed {
-        let start = self.current().span.start;
-        self.expect(TokenKind::Byte(b'('), "expected type parameters");
-        let mut parameters = Vec::new();
-
-        if !self.byte(b')') {
-            loop {
-                if self.at(TokenKind::Operator(Operator::Ellipsis))
-                    || (self.at(TokenKind::Name)
-                        && self.next() == TokenKind::Operator(Operator::Ellipsis))
-                {
-                    parameters.push(self.pack()?);
-                    break;
-                }
-
-                if self.at(TokenKind::Name) && self.next() == TokenKind::Byte(b':') {
-                    let begin = self.current().span.start;
-                    let name = self.name();
-                    self.take();
-                    let annotation = self.annotation()?;
-                    parameters.push(self.node(Kind::TypeParameter, begin, [name, annotation]));
-                } else {
-                    parameters.push(self.annotation()?);
-                }
-
-                if !self.consume(TokenKind::Byte(b',')) {
-                    break;
-                }
-            }
-        }
-
-        self.expect(TokenKind::Byte(b')'), "expected closing type parameters");
-
-        Ok(self.node(Kind::Parameters, start, parameters))
-    }
-
-    fn function_type(&mut self, allow_pack: bool) -> Parsed {
-        let start = self.current().span.start;
-        let mut children = Vec::new();
-
-        if self.byte(b'<') {
-            children.push(self.generics(false)?);
-        }
-
-        let parameters = self.type_parameters()?;
-
-        self.inspect(self.builder.nodes[parameters].span);
-
-        let named = self.builder.children[self.builder.nodes[parameters].children.clone()]
-            .iter()
-            .any(|index| self.builder.nodes[*index].kind == Kind::TypeParameter);
-
-        if self.consume(TokenKind::Operator(Operator::Arrow)) {
-            children.push(parameters);
-            children.push(self.type_argument()?);
-
-            return Ok(self.node(Kind::TypeFunctionExpression, start, children));
-        }
-
-        if !children.is_empty() || named {
-            let position = self.current().span.start;
-
-            self.expectation(
-                crate::Span {
-                    start: position,
-                    end: position,
-                },
-                super::Expected::Token(TokenKind::Operator(Operator::Arrow)),
-            );
-
-            children.push(parameters);
-            children.push(self.missing(self.error("expected function type arrow"), "annotation"));
-
-            return Ok(self.node(Kind::TypeFunctionExpression, start, children));
-        }
-
-        let parts = &self.builder.children[self.builder.nodes[parameters].children.clone()];
-
-        let single = parts.len() == 1
-            && !matches!(
-                self.builder.nodes[parts[0]].kind,
-                Kind::GenericPack | Kind::VariadicType
-            );
-
-        if !allow_pack && !single {
-            let position = self.current().span.start;
-
-            self.expectation(
-                crate::Span {
-                    start: position,
-                    end: position,
-                },
-                super::Expected::Token(TokenKind::Operator(Operator::Arrow)),
-            );
-
-            children.push(parameters);
-            children.push(self.missing(self.error("expected function type arrow"), "annotation"));
-
-            return Ok(self.node(Kind::TypeFunctionExpression, start, children));
-        }
-
-        self.builder.nodes[parameters].kind =
-            if allow_pack && !(single && (self.byte(b'?') || self.byte(b'|') || self.byte(b'&'))) {
-                Kind::TypePack
-            } else {
-                Kind::TypeGroup
-            };
-
-        Ok(parameters)
-    }
-
-    fn type_table(&mut self, declaration: bool) -> Parsed {
-        let start = self.take().span.start;
-        let mut fields = Vec::new();
-
-        while !self.byte(b'}') {
-            let begin = self.current().span.start;
-
-            let access = if fields.is_empty()
-                && (self.named(b"read") || self.named(b"write"))
-                && self.next() != TokenKind::Byte(b':')
-            {
-                Some(self.leaf(Kind::Operator))
+                Some(self.missing("generic default", self.error("expected generic default")))
             } else {
                 None
             };
 
-            let shorthand = fields.is_empty()
-                && !self.byte(b'[')
-                && !(self.at(TokenKind::Name) && self.next() == TokenKind::Byte(b':'));
+            let node = self.append_node(
+                begin,
+                NodeKind::Generic {
+                    name,
+                    ellipsis,
+                    assignment,
+                    default,
+                },
+            );
 
-            if shorthand {
-                fields.extend(access);
-                fields.push(self.annotation()?);
-                break;
-            }
+            let separator = self.consume(TokenKind::Symbol(Symbol::Comma));
+            parameters.push(ListEntry { node, separator });
 
-            let field = self.type_field(declaration)?;
-
-            if let Some(access) = access {
-                self.builder.nodes[field].span.start = begin;
-                self.prepend(field, access);
-            }
-
-            fields.push(field);
-
-            if !self.consume(TokenKind::Byte(b',')) && !self.consume(TokenKind::Byte(b';')) {
+            if separator.is_none() {
                 break;
             }
         }
 
-        self.expect(TokenKind::Byte(b'}'), "expected closing table type");
+        let closing = self.expect(
+            TokenKind::Symbol(Symbol::GreaterThan),
+            "expected closing generics",
+        );
 
-        Ok(self.node(Kind::TypeTable, start, fields))
+        let parameters = self.append_list(parameters);
+
+        self.append_node(
+            start,
+            NodeKind::Generics {
+                opening,
+                parameters,
+                closing,
+            },
+        )
     }
 
-    pub(super) fn type_field(&mut self, declaration: bool) -> Parsed {
-        let start = self.current().span.start;
+    fn function_type(&mut self, allow_pack: bool, attributes: Option<NodeIndex>) -> NodeIndex {
+        let start = attributes.map_or_else(|| self.position(), |node| self.node(node).tokens.start);
 
-        let access = if (self.named(b"read") || self.named(b"write"))
-            && self.next() != TokenKind::Byte(b':')
-        {
-            Some(self.leaf(Kind::Operator))
+        let generics = if self.at(TokenKind::Symbol(Symbol::LessThan)) {
+            Some(self.generics(false))
         } else {
             None
         };
 
-        let indexed = self.consume(TokenKind::Byte(b'['));
+        let parameter_start = self.position();
 
-        let property = indexed
+        let opening = self.expect(
+            TokenKind::Symbol(Symbol::LeftParenthesis),
+            "expected type parameters",
+        );
+
+        let (entries, named) = self.type_parameters();
+
+        let closing = self.expect(
+            TokenKind::Symbol(Symbol::RightParenthesis),
+            "expected closing type parameters",
+        );
+
+        let single = entries.len() == 1
+            && !matches!(
+                self.node(entries[0].node).kind,
+                NodeKind::GenericPack { .. } | NodeKind::VariadicType { .. }
+            );
+
+        let function = self.at(TokenKind::Symbol(Symbol::Arrow))
+            || attributes.is_some()
+            || generics.is_some()
+            || named
+            || opening.is_none()
+            || (!allow_pack && !single);
+
+        if function {
+            let parameters = self.append_list(entries);
+
+            let parameters = self.append_node(
+                parameter_start,
+                NodeKind::Parameters {
+                    opening,
+                    parameters,
+                    closing,
+                },
+            );
+
+            let arrow = self.expect(
+                TokenKind::Symbol(Symbol::Arrow),
+                "expected function type arrow",
+            );
+
+            let returns = if arrow.is_some() {
+                self.type_argument()
+            } else {
+                self.missing("annotation", self.error("expected function return type"))
+            };
+
+            return self.append_node(
+                start,
+                NodeKind::TypeFunction {
+                    attributes,
+                    generics,
+                    parameters,
+                    arrow,
+                    returns,
+                },
+            );
+        }
+
+        if allow_pack
+            && !(single
+                && matches!(
+                    self.current().kind,
+                    TokenKind::Symbol(Symbol::QuestionMark | Symbol::Pipe | Symbol::Ampersand)
+                ))
+        {
+            let types = self.append_list(entries);
+
+            self.append_node(
+                start,
+                NodeKind::TypePack {
+                    opening,
+                    types,
+                    closing,
+                },
+            )
+        } else {
+            self.append_node(
+                start,
+                NodeKind::TypeGroup {
+                    opening: opening.expect("group has an opening parenthesis"),
+                    annotation: entries[0].node,
+                    closing,
+                },
+            )
+        }
+    }
+
+    fn type_parameters(&mut self) -> (Vec<ListEntry>, bool) {
+        let mut entries = Vec::new();
+        let mut named = false;
+
+        if !self.at(TokenKind::Symbol(Symbol::RightParenthesis)) {
+            loop {
+                let begin = self.position();
+                let pack = self.at_pack();
+
+                let node = if pack {
+                    self.pack()
+                } else if self.at(TokenKind::Name)
+                    && self.lookahead() == TokenKind::Symbol(Symbol::Colon)
+                {
+                    named = true;
+                    let name = self.name();
+                    let colon = self.take();
+                    let annotation = self.annotation();
+
+                    self.append_node(
+                        begin,
+                        NodeKind::TypeParameter {
+                            name,
+                            colon,
+                            annotation,
+                        },
+                    )
+                } else {
+                    self.annotation()
+                };
+
+                let separator = if pack {
+                    None
+                } else {
+                    self.consume(TokenKind::Symbol(Symbol::Comma))
+                };
+
+                entries.push(ListEntry { node, separator });
+
+                if separator.is_none() {
+                    break;
+                }
+            }
+        }
+
+        (entries, named)
+    }
+
+    fn access(&mut self) -> Option<TokenIndex> {
+        if (self.named(b"read") || self.named(b"write"))
+            && self.lookahead() != TokenKind::Symbol(Symbol::Colon)
+        {
+            Some(self.take())
+        } else {
+            None
+        }
+    }
+
+    fn type_table(&mut self, declaration: bool) -> NodeIndex {
+        let start = self.position();
+        let opening = self.take();
+        let mut fields = Vec::new();
+        let mut table_access = None;
+        let mut element = None;
+        let mut indexed = false;
+
+        while !self.at(TokenKind::Symbol(Symbol::RightBrace)) && !self.at(TokenKind::EndOfFile) {
+            let begin = self.position();
+            let access = self.access();
+
+            if fields.is_empty()
+                && !self.at(TokenKind::Symbol(Symbol::LeftBracket))
+                && !(self.at(TokenKind::Name)
+                    && self.lookahead() == TokenKind::Symbol(Symbol::Colon))
+            {
+                table_access = access;
+                element = Some(self.annotation());
+                break;
+            }
+
+            let node = self.type_field_contents(begin, access, declaration);
+
+            if matches!(self.node(node).kind, NodeKind::TypeIndexer { .. }) {
+                if indexed {
+                    self.diagnose(Diagnostic {
+                        span: self.node(node).span,
+                        message: "table type has more than one indexer",
+                    });
+                }
+
+                indexed = true;
+            }
+
+            let separator = self
+                .consume(TokenKind::Symbol(Symbol::Comma))
+                .or_else(|| self.consume(TokenKind::Symbol(Symbol::Semicolon)));
+
+            fields.push(ListEntry { node, separator });
+
+            if separator.is_none() || self.position() == begin {
+                break;
+            }
+        }
+
+        let closing = self.expect(
+            TokenKind::Symbol(Symbol::RightBrace),
+            "expected closing table type",
+        );
+
+        let fields = self.append_list(fields);
+
+        self.append_node(
+            start,
+            NodeKind::TypeTable {
+                opening,
+                access: table_access,
+                element,
+                fields,
+                closing,
+            },
+        )
+    }
+
+    /// Parses a table type field, optionally in a declaration context.
+    pub fn type_field(&mut self, declaration: bool) -> NodeIndex {
+        let start = self.position();
+        let access = self.access();
+
+        self.type_field_contents(start, access, declaration)
+    }
+
+    fn type_field_contents(
+        &mut self,
+        start: TokenIndex,
+        access: Option<TokenIndex>,
+        declaration: bool,
+    ) -> NodeIndex {
+        let opening = self.consume(TokenKind::Symbol(Symbol::LeftBracket));
+
+        let property = opening.is_some()
             && matches!(
                 self.current().kind,
                 TokenKind::QuotedString | TokenKind::RawString
             )
-            && self.next() == TokenKind::Byte(b']');
+            && self.lookahead() == TokenKind::Symbol(Symbol::RightBracket);
 
-        let key = if indexed {
-            let key = self.annotation()?;
-            self.expect(TokenKind::Byte(b']'), "expected closing type index");
-
-            key
+        let key = if opening.is_some() {
+            self.annotation()
         } else {
             self.name()
         };
 
-        self.expect(TokenKind::Byte(b':'), "expected field type");
-
-        let annotation = if declaration && !indexed {
-            self.declaration_annotation()?
+        let closing = if opening.is_some() {
+            self.expect(
+                TokenKind::Symbol(Symbol::RightBracket),
+                "expected closing type index",
+            )
         } else {
-            self.annotation()?
+            None
         };
 
-        Ok(self.node(
-            if indexed && !property {
-                Kind::TypeIndexer
-            } else {
-                Kind::TypeField
+        let colon = self.expect(TokenKind::Symbol(Symbol::Colon), "expected field type");
+
+        let annotation = if declaration && opening.is_none() {
+            self.declaration_annotation()
+        } else {
+            self.annotation()
+        };
+
+        let kind = match opening {
+            Some(opening) if !property => NodeKind::TypeIndexer {
+                access,
+                opening,
+                key,
+                closing,
+                colon,
+                annotation,
             },
-            start,
-            access.into_iter().chain([key, annotation]),
-        ))
+
+            _ => NodeKind::TypeField {
+                access,
+                opening,
+                key,
+                closing,
+                colon,
+                annotation,
+            },
+        };
+
+        self.append_node(start, kind)
     }
 }

@@ -1,684 +1,1303 @@
-use super::context::{Expected, Rule};
-use super::{Diagnostic, Keyword, Kind, Operator, Parsed, Parser, TokenKind};
+use super::Parser;
+use crate::token::{Keyword, Symbol, TokenKind};
+use crate::tree::{Diagnostic, ListEntry, NodeIndex, NodeKind, NodeList, TokenIndex};
 
 impl Parser<'_> {
-    pub(super) fn statement(&mut self) -> Parsed {
-        self.scoped(Rule::Statement, Self::statement_contents)
+    pub(super) fn statement(&mut self) -> Result<NodeIndex, Diagnostic> {
+        self.nested(Self::statement_contents)
     }
 
-    fn statement_contents(&mut self) -> Parsed {
-        self.previous = None;
-        let start = self.current().span.start;
-
+    fn statement_contents(&mut self) -> Result<NodeIndex, Diagnostic> {
         match self.current().kind {
-            TokenKind::Attribute | TokenKind::AttributeOpen => {
-                let attributes = self.attributes()?;
-
-                if self.named(b"declare") && self.next() == TokenKind::Keyword(Keyword::Function) {
-                    let declaration = self.declaration()?;
-                    self.prepend(declaration, attributes);
-                    self.builder.nodes[declaration].span.start = start;
-
-                    return Ok(declaration);
-                }
-
-                if self.named(b"export") {
-                    return self.export(start, vec![attributes]);
-                }
-
-                let constant = self.named(b"const");
-                let local = constant || self.consume(TokenKind::Keyword(Keyword::Local));
-
-                if constant {
-                    self.take();
-                }
-
-                self.expect(
-                    TokenKind::Keyword(Keyword::Function),
-                    "expected function after attributes",
-                );
-
-                let name = if local {
-                    self.name()
-                } else {
-                    self.function_name()
-                };
-
-                self.function(
-                    start,
-                    if local {
-                        Kind::LocalFunction
-                    } else {
-                        Kind::Function
-                    },
-                    vec![attributes, name],
-                )
-            }
-
-            TokenKind::Keyword(Keyword::Local) => self.local(false),
+            TokenKind::Keyword(Keyword::Local) => Ok(self.local(false, None)),
 
             TokenKind::Keyword(Keyword::Function) => {
-                self.take();
-                let name = self.function_name();
+                let start = self.position();
+                let keyword = Some(self.take());
+                let name = Some(self.function_name());
 
-                self.function(start, Kind::Function, vec![name])
+                Ok(self.function(start, None, None, keyword, name))
             }
 
-            TokenKind::Keyword(Keyword::If) => self.conditional(),
-
-            TokenKind::Keyword(Keyword::While) => {
-                self.take();
-                let condition = self.expression(0)?;
-                self.expect(TokenKind::Keyword(Keyword::Do), "expected do");
-                let body = self.block(&[Keyword::End]);
-                self.close(Keyword::End);
-
-                Ok(self.node(Kind::While, start, [condition, body]))
+            TokenKind::Attribute | TokenKind::Symbol(Symbol::AttributeOpen) => {
+                self.attributed_statement()
             }
 
-            TokenKind::Keyword(Keyword::Repeat) => {
-                self.take();
-                let body = self.block(&[Keyword::Until]);
-                self.expect(TokenKind::Keyword(Keyword::Until), "expected until");
-                let condition = self.expression(0)?;
+            TokenKind::Keyword(Keyword::If) => Ok(self.if_statement()),
+            TokenKind::Keyword(Keyword::While) => Ok(self.while_statement()),
+            TokenKind::Keyword(Keyword::Repeat) => Ok(self.repeat_statement()),
+            TokenKind::Keyword(Keyword::Do) => Ok(self.do_statement()),
+            TokenKind::Keyword(Keyword::For) => Ok(self.for_statement()),
+            TokenKind::Keyword(Keyword::Return) => Ok(self.return_statement()),
 
-                Ok(self.node(Kind::Repeat, start, [body, condition]))
-            }
+            TokenKind::Keyword(Keyword::Break) => {
+                let keyword = self.position();
 
-            TokenKind::Keyword(Keyword::Do) => {
-                self.take();
-                let body = self.block(&[Keyword::End]);
-                self.close(Keyword::End);
-
-                Ok(self.node(Kind::Do, start, [body]))
-            }
-
-            TokenKind::Keyword(Keyword::For) => self.for_statement(),
-
-            TokenKind::Keyword(Keyword::Return) => {
-                self.take();
-
-                let values = if self.block_end() || self.byte(b';') {
-                    Vec::new()
-                } else {
-                    self.expressions()?
-                };
-
-                Ok(self.node(Kind::Return, start, values))
-            }
-
-            TokenKind::Keyword(Keyword::Break) => Ok(self.leaf(Kind::Break)),
-            TokenKind::Name => self.contextual(),
-            _ => self.assignment(),
-        }
-    }
-
-    fn contextual(&mut self) -> Parsed {
-        let start = self.current().span.start;
-
-        match self.current().kind {
-            TokenKind::Name
-                if self.named(b"const")
-                    && matches!(
-                        self.next(),
-                        TokenKind::Name | TokenKind::Keyword(Keyword::Function) | TokenKind::Eof
-                    ) =>
-            {
-                self.local(true)
-            }
-
-            TokenKind::Name
-                if self.named(b"type")
-                    && matches!(
-                        self.next(),
-                        TokenKind::Name | TokenKind::Keyword(Keyword::Function) | TokenKind::Eof
-                    ) =>
-            {
-                self.alias()
-            }
-
-            TokenKind::Name
-                if self.named(b"class")
-                    && matches!(self.next(), TokenKind::Name | TokenKind::Eof) =>
-            {
-                self.class(false)
-            }
-
-            TokenKind::Name if self.named(b"open") && self.next() == TokenKind::Name => {
-                self.take();
-
-                if !self.named(b"class") {
-                    return Err(self.error("expected class after open"));
+                if self.loop_depth == 0 {
+                    self.diagnose(self.error("break statement must be inside a loop"));
                 }
 
-                let class = self.class(false)?;
-                self.builder.nodes[class].span.start = start;
+                self.take();
 
-                Ok(class)
+                Ok(self.append_node(keyword, NodeKind::Break { keyword }))
             }
 
-            TokenKind::Name
-                if self.named(b"declare")
-                    && matches!(
-                        self.next(),
-                        TokenKind::Name | TokenKind::Keyword(Keyword::Function) | TokenKind::Eof
-                    ) =>
-            {
-                self.declaration()
-            }
-
-            TokenKind::Name
-                if self.named(b"export")
-                    && matches!(
-                        self.next(),
-                        TokenKind::Name
-                            | TokenKind::Keyword(Keyword::Local | Keyword::Function)
-                            | TokenKind::Eof
-                    ) =>
-            {
-                self.export(start, Vec::new())
-            }
-
-            TokenKind::Name
-                if self.named(b"continue")
-                    && !matches!(
-                        self.next(),
-                        TokenKind::Byte(b'=' | b'(' | b'.' | b'[' | b':' | b'{' | b',' | b'<')
-                            | TokenKind::Operator(_)
-                            | TokenKind::QuotedString
-                            | TokenKind::RawString
-                    ) =>
-            {
-                Ok(self.leaf(Kind::Continue))
-            }
-
-            _ => self.assignment(),
+            TokenKind::Name => self.contextual_statement(),
+            _ => self.assignment_statement(),
         }
     }
 
-    fn export(&mut self, start: usize, mut children: Vec<usize>) -> Parsed {
-        self.take();
-        let begin = self.current().span.start;
+    fn attributed_statement(&mut self) -> Result<NodeIndex, Diagnostic> {
+        let start = self.position();
+        let attributes = Some(self.attributes());
 
-        let statement = if self.consume(TokenKind::Keyword(Keyword::Function)) {
-            let name = self.name();
-
-            self.function(begin, Kind::Function, vec![name])?
-        } else {
-            if !children.is_empty() {
-                return Err(self.error("expected exported function"));
+        if self.named(b"export") {
+            self.export_statement(attributes)
+        } else if self.named(b"declare") {
+            self.declaration_statement(attributes)
+        } else if self.at(TokenKind::Keyword(Keyword::Local)) {
+            if self.lookahead() != TokenKind::Keyword(Keyword::Function) {
+                return Err(self.error("expected function after attributes"));
             }
 
-            self.required("statement", |parser| parser.nested(Self::statement))
-        };
+            Ok(self.local(false, attributes))
+        } else if self.named(b"const") {
+            if self.lookahead() != TokenKind::Keyword(Keyword::Function) {
+                return Err(self.error("expected function after attributes"));
+            }
 
-        self.inspect(self.builder.nodes[statement].span);
-
-        if !matches!(
-            self.builder.nodes[statement].kind,
-            Kind::Local
-                | Kind::Constant
-                | Kind::Function
-                | Kind::TypeAlias
-                | Kind::TypeFunction
-                | Kind::Class
-                | Kind::Missing
-        ) {
-            return Err(self.error("expected exportable declaration"));
-        }
-
-        children.push(statement);
-
-        Ok(self.node(Kind::Export, start, children))
-    }
-
-    fn local(&mut self, constant: bool) -> Parsed {
-        let start = self.take().span.start;
-
-        if self.consume(TokenKind::Keyword(Keyword::Function)) {
-            let name = self.name();
-
-            return self.function(start, Kind::LocalFunction, vec![name]);
-        }
-
-        let mut children = vec![self.binding()?];
-
-        while self.consume(TokenKind::Byte(b',')) {
-            children.push(self.binding()?);
-        }
-
-        if self.consume(TokenKind::Byte(b'=')) {
-            children.extend(self.expressions()?);
-        } else if constant {
-            let position = self.current().span.start;
-
-            self.expectation(
-                crate::Span {
-                    start: position,
-                    end: position,
-                },
-                Expected::Token(TokenKind::Byte(b'=')),
+            Ok(self.local(true, attributes))
+        } else if self.at(TokenKind::Keyword(Keyword::Function)) || self.at(TokenKind::EndOfFile) {
+            let keyword = self.expect(
+                TokenKind::Keyword(Keyword::Function),
+                "expected function declaration after attributes",
             );
 
-            children.push(self.missing(self.error("expected constant initializer"), "initializer"));
-        }
+            let name = Some(self.function_name());
 
-        Ok(self.node(
-            if constant {
-                Kind::Constant
-            } else {
-                Kind::Local
-            },
-            start,
-            children,
-        ))
+            Ok(self.function(start, attributes, None, keyword, name))
+        } else {
+            Err(self.error("expected function declaration after attributes"))
+        }
     }
 
-    fn assignment(&mut self) -> Parsed {
-        let start = self.current().span.start;
-        let first = self.primary()?;
+    fn contextual_statement(&mut self) -> Result<NodeIndex, Diagnostic> {
+        let next = self.lookahead();
 
-        self.inspect(self.builder.nodes[first].span);
-
-        if matches!(
-            self.builder.nodes[first].kind,
-            Kind::Call | Kind::MethodCall
-        ) && !matches!(
-            self.current().kind,
-            TokenKind::Byte(b',' | b'=') | TokenKind::Operator(_)
-        ) {
-            return Ok(self.node(Kind::CallStatement, start, [first]));
-        }
-
-        let mut targets = vec![first];
-
-        while self.consume(TokenKind::Byte(b',')) {
-            targets.push(self.primary()?);
-        }
-
-        let compound = matches!(
-            self.current().kind,
-            TokenKind::Operator(
-                Operator::AddAssign
-                    | Operator::SubtractAssign
-                    | Operator::MultiplyAssign
-                    | Operator::DivideAssign
-                    | Operator::FloorDivideAssign
-                    | Operator::ModuloAssign
-                    | Operator::PowerAssign
-                    | Operator::ConcatAssign
-            )
+        let declaration = matches!(
+            next,
+            TokenKind::Name | TokenKind::Keyword(Keyword::Function) | TokenKind::EndOfFile
         );
 
-        if self.byte(b'=') || compound {
-            if targets.iter().any(|index| {
-                self.inspect(self.builder.nodes[*index].span);
-
-                !matches!(
-                    self.builder.nodes[*index].kind,
-                    Kind::Name | Kind::Field | Kind::Index
-                )
-            }) {
-                return Err(self.error("invalid assignment target"));
-            }
-
-            if compound && targets.len() != 1 {
-                return Err(self.error("compound assignment requires one target"));
-            }
-
-            targets.push(self.leaf(Kind::Operator));
-
-            if compound {
-                targets.push(self.expression(0)?);
-            } else {
-                targets.extend(self.expressions()?);
-            }
-
-            Ok(self.node(
-                if compound {
-                    Kind::CompoundAssignment
-                } else {
-                    Kind::Assignment
-                },
-                start,
-                targets,
-            ))
-        } else if targets.len() == 1
+        if self.named(b"const") && declaration {
+            Ok(self.local(true, None))
+        } else if self.named(b"type") && declaration {
+            Ok(self.alias_statement())
+        } else if self.named(b"declare") && declaration {
+            self.declaration_statement(None)
+        } else if self.named(b"export")
             && matches!(
-                self.builder.nodes[first].kind,
-                Kind::Call | Kind::MethodCall
+                next,
+                TokenKind::Name
+                    | TokenKind::Keyword(Keyword::Local | Keyword::Function)
+                    | TokenKind::EndOfFile
             )
         {
-            Ok(self.node(Kind::CallStatement, start, targets))
+            self.export_statement(None)
+        } else if self.named(b"class") && matches!(next, TokenKind::Name | TokenKind::EndOfFile) {
+            Ok(self.class_statement(false, None))
+        } else if self.named(b"open") && matches!(next, TokenKind::Name | TokenKind::EndOfFile) {
+            let open = Some(self.take());
+
+            if !self.named(b"class") {
+                return Err(self.error("expected class after open"));
+            }
+
+            Ok(self.class_statement(false, open))
+        } else if self.named(b"continue") && !continues_expression(next) {
+            let keyword = self.position();
+
+            if self.loop_depth == 0 {
+                self.diagnose(self.error("continue statement must be inside a loop"));
+            }
+
+            self.take();
+
+            Ok(self.append_node(keyword, NodeKind::Continue { keyword }))
         } else {
-            Err(self.error("expected assignment or call"))
+            self.assignment_statement()
         }
     }
 
-    fn conditional(&mut self) -> Parsed {
-        let start = self.current().span.start;
-        let mut branches = Vec::new();
+    fn local(&mut self, constant: bool, attributes: Option<NodeIndex>) -> NodeIndex {
+        let start = attributes.map_or_else(|| self.position(), |node| self.node(node).tokens.start);
+        let keyword = self.take();
+
+        if self.at(TokenKind::Keyword(Keyword::Function)) {
+            let function_keyword = Some(self.take());
+            let name = Some(self.name());
+
+            return self.function(start, attributes, Some(keyword), function_keyword, name);
+        }
+
+        if attributes.is_some() {
+            self.diagnose(self.error("expected function after attributes"));
+        }
+
+        let bindings = self.bindings();
+        let assignment = self.consume(TokenKind::Symbol(Symbol::Assignment));
+
+        let values = if assignment.is_some() {
+            self.expressions()
+        } else if constant {
+            let node = self.missing("initializer", self.error("expected constant initializer"));
+
+            self.append_list([ListEntry {
+                node,
+                separator: None,
+            }])
+        } else {
+            self.append_list([])
+        };
+
+        if constant && assignment.is_some() {
+            let entries = &self.lists[values.0.clone()];
+
+            let expandable = entries.last().is_some_and(|entry| {
+                matches!(
+                    self.node(entry.node).kind,
+                    NodeKind::Call { .. } | NodeKind::MethodCall { .. } | NodeKind::Variadic { .. }
+                )
+            });
+
+            if entries.len() < bindings.0.len() && !expandable {
+                self.diagnose(self.error("not enough constant initializers"));
+            }
+        }
+
+        let kind = if constant {
+            NodeKind::Constant {
+                keyword,
+                bindings,
+                assignment,
+                values,
+            }
+        } else {
+            NodeKind::Local {
+                keyword,
+                bindings,
+                assignment,
+                values,
+            }
+        };
+
+        self.append_node(start, kind)
+    }
+
+    fn binding(&mut self, declaration: bool) -> NodeIndex {
+        let start = self.position();
+        let name = self.name();
+        let colon = self.consume(TokenKind::Symbol(Symbol::Colon));
+
+        let annotation = colon.map(|_| {
+            if declaration {
+                self.declaration_annotation()
+            } else {
+                self.annotation()
+            }
+        });
+
+        self.append_node(
+            start,
+            NodeKind::Binding {
+                name,
+                colon,
+                annotation,
+            },
+        )
+    }
+
+    fn bindings(&mut self) -> NodeList {
+        let mut bindings = Vec::new();
 
         loop {
-            let diagnostics = self.builder.diagnostics.len();
-            let begin = self.take().span.start;
+            let node = self.binding(false);
+            let separator = self.consume(TokenKind::Symbol(Symbol::Comma));
+            bindings.push(ListEntry { node, separator });
 
-            let condition = self.condition()?;
-
-            self.expect(TokenKind::Keyword(Keyword::Then), "expected then");
-            let body = self.block(&[Keyword::ElseIf, Keyword::Else, Keyword::End]);
-            let branch = self.node(Kind::Branch, begin, [condition, body]);
-            self.claim(branch, diagnostics);
-            branches.push(branch);
-
-            if !self.keyword(Keyword::ElseIf) {
+            if separator.is_none() {
                 break;
             }
         }
 
-        if self.keyword(Keyword::Else) {
-            let diagnostics = self.builder.diagnostics.len();
-            let begin = self.take().span.start;
-            let body = self.block(&[Keyword::End]);
-            let branch = self.node(Kind::Else, begin, [body]);
-            self.claim(branch, diagnostics);
-            branches.push(branch);
-        }
-
-        self.close(Keyword::End);
-
-        Ok(self.node(Kind::If, start, branches))
+        self.append_list(bindings)
     }
 
-    fn for_statement(&mut self) -> Parsed {
-        let start = self.take().span.start;
-        let mut children = vec![self.binding()?];
-        let numeric = self.consume(TokenKind::Byte(b'='));
+    pub(super) fn condition(&mut self) -> NodeIndex {
+        self.required("condition", |parser| {
+            parser.nested(|parser| Ok(parser.condition_contents()))
+        })
+    }
 
-        if numeric {
-            children.push(self.expression(0)?);
-            self.expect(TokenKind::Byte(b','), "expected range separator");
-            children.push(self.expression(0)?);
+    fn condition_contents(&mut self) -> NodeIndex {
+        let constant = self.named(b"const") && self.lookahead() == TokenKind::Name;
 
-            if self.consume(TokenKind::Byte(b',')) {
-                children.push(self.expression(0)?);
-            }
-        } else {
-            while self.consume(TokenKind::Byte(b',')) {
-                children.push(self.binding()?);
-            }
-
-            self.expect(TokenKind::Keyword(Keyword::In), "expected in");
-            children.extend(self.expressions()?);
+        if !constant && !self.at(TokenKind::Keyword(Keyword::Local)) {
+            return self.expression();
         }
 
-        self.expect(TokenKind::Keyword(Keyword::Do), "expected do");
-        children.push(self.block(&[Keyword::End]));
-        self.close(Keyword::End);
+        let start = self.position();
+        let keyword = self.take();
+        let node = self.binding(false);
 
-        Ok(self.node(
-            if numeric {
-                Kind::NumericFor
-            } else {
-                Kind::GenericFor
-            },
+        let bindings = self.append_list([ListEntry {
+            node,
+            separator: None,
+        }]);
+
+        let assignment = self.expect(
+            TokenKind::Symbol(Symbol::Assignment),
+            "expected condition initializer; only one binding is allowed",
+        );
+
+        let node = self.expression();
+
+        let values = self.append_list([ListEntry {
+            node,
+            separator: None,
+        }]);
+
+        let kind = if constant {
+            NodeKind::Constant {
+                keyword,
+                bindings,
+                assignment,
+                values,
+            }
+        } else {
+            NodeKind::Local {
+                keyword,
+                bindings,
+                assignment,
+                values,
+            }
+        };
+
+        self.append_node(start, kind)
+    }
+
+    fn assignment_statement(&mut self) -> Result<NodeIndex, Diagnostic> {
+        let start = self.position();
+        let first = self.primary()?;
+
+        if matches!(
+            self.node(first).kind,
+            NodeKind::Call { .. } | NodeKind::MethodCall { .. }
+        ) && !self.at(TokenKind::Symbol(Symbol::Comma))
+            && !self.at(TokenKind::Symbol(Symbol::Assignment))
+            && !compound(self.current().kind)
+        {
+            return Ok(self.append_node(start, NodeKind::CallStatement { call: first }));
+        }
+
+        let mut targets = Vec::new();
+        let mut node = first;
+
+        loop {
+            let separator = self.consume(TokenKind::Symbol(Symbol::Comma));
+            targets.push(ListEntry { node, separator });
+
+            if separator.is_none() {
+                break;
+            }
+
+            node = self.required("assignment target", Self::primary);
+        }
+
+        if !self.at(TokenKind::Symbol(Symbol::Assignment)) && !compound(self.current().kind) {
+            return Err(self.error("expected assignment or call"));
+        }
+
+        for entry in &targets {
+            if !matches!(
+                self.node(entry.node).kind,
+                NodeKind::Name { .. }
+                    | NodeKind::Field { .. }
+                    | NodeKind::Index { .. }
+                    | NodeKind::Missing { .. }
+            ) {
+                self.diagnose(Diagnostic {
+                    span: self.node(entry.node).span,
+                    message: "invalid assignment target",
+                });
+            }
+        }
+
+        if compound(self.current().kind) {
+            if targets.len() != 1 {
+                return Err(self.error("compound assignment requires one target"));
+            }
+
+            let operator = self.take();
+            let value = self.expression();
+
+            Ok(self.append_node(
+                start,
+                NodeKind::CompoundAssignment {
+                    target: first,
+                    operator,
+                    value,
+                },
+            ))
+        } else {
+            let assignment = Some(self.take());
+            let targets = self.append_list(targets);
+            let values = self.expressions();
+
+            Ok(self.append_node(
+                start,
+                NodeKind::Assignment {
+                    targets,
+                    assignment,
+                    values,
+                },
+            ))
+        }
+    }
+
+    fn if_statement(&mut self) -> NodeIndex {
+        let start = self.position();
+        let mut branches = Vec::new();
+
+        loop {
+            let begin = self.position();
+            let keyword = self.take();
+            let condition = self.condition();
+            let then = self.expect(TokenKind::Keyword(Keyword::Then), "expected then");
+            let body = self.block(&[Keyword::ElseIf, Keyword::Else, Keyword::End]);
+
+            let node = self.append_node(
+                begin,
+                NodeKind::Branch {
+                    keyword,
+                    condition,
+                    then,
+                    body,
+                },
+            );
+
+            branches.push(ListEntry {
+                node,
+                separator: None,
+            });
+
+            if !self.at(TokenKind::Keyword(Keyword::ElseIf)) {
+                break;
+            }
+        }
+
+        let otherwise = if self.at(TokenKind::Keyword(Keyword::Else)) {
+            let begin = self.position();
+            let keyword = self.take();
+            let body = self.block(&[Keyword::End]);
+
+            Some(self.append_node(begin, NodeKind::Else { keyword, body }))
+        } else {
+            None
+        };
+
+        let end = self.expect(TokenKind::Keyword(Keyword::End), "expected end");
+        let branches = self.append_list(branches);
+
+        self.append_node(
             start,
-            children,
+            NodeKind::If {
+                branches,
+                otherwise,
+                end,
+            },
+        )
+    }
+
+    fn while_statement(&mut self) -> NodeIndex {
+        let start = self.position();
+        let keyword = self.take();
+        let condition = self.expression();
+        let do_keyword = self.expect(TokenKind::Keyword(Keyword::Do), "expected do");
+        self.loop_depth += 1;
+        let body = self.block(&[Keyword::End]);
+        self.loop_depth -= 1;
+        let end = self.expect(TokenKind::Keyword(Keyword::End), "expected end");
+
+        self.append_node(
+            start,
+            NodeKind::While {
+                keyword,
+                condition,
+                do_keyword,
+                body,
+                end,
+            },
+        )
+    }
+
+    fn repeat_statement(&mut self) -> NodeIndex {
+        let start = self.position();
+        let keyword = self.take();
+        self.loop_depth += 1;
+        let body = self.block(&[Keyword::Until]);
+        self.loop_depth -= 1;
+        let until = self.expect(TokenKind::Keyword(Keyword::Until), "expected until");
+        let condition = self.expression();
+
+        self.append_node(
+            start,
+            NodeKind::Repeat {
+                keyword,
+                body,
+                until,
+                condition,
+            },
+        )
+    }
+
+    fn do_statement(&mut self) -> NodeIndex {
+        let start = self.position();
+        let keyword = self.take();
+        let body = self.block(&[Keyword::End]);
+        let end = self.expect(TokenKind::Keyword(Keyword::End), "expected end");
+
+        self.append_node(start, NodeKind::Do { keyword, body, end })
+    }
+
+    fn for_statement(&mut self) -> NodeIndex {
+        let start = self.position();
+        let keyword = self.take();
+        let binding = self.binding(false);
+
+        if self.at(TokenKind::Symbol(Symbol::Assignment)) {
+            self.numeric_for(start, keyword, binding)
+        } else {
+            self.generic_for(start, keyword, binding)
+        }
+    }
+
+    fn numeric_for(
+        &mut self,
+        begin: TokenIndex,
+        keyword: TokenIndex,
+        binding: NodeIndex,
+    ) -> NodeIndex {
+        let assignment = Some(self.take());
+        let start = self.expression();
+
+        let range_separator =
+            self.expect(TokenKind::Symbol(Symbol::Comma), "expected range separator");
+
+        let end = self.expression();
+        let step_separator = self.consume(TokenKind::Symbol(Symbol::Comma));
+        let step = step_separator.map(|_| self.expression());
+        let do_keyword = self.expect(TokenKind::Keyword(Keyword::Do), "expected do");
+        self.loop_depth += 1;
+        let body = self.block(&[Keyword::End]);
+        self.loop_depth -= 1;
+        let end_keyword = self.expect(TokenKind::Keyword(Keyword::End), "expected end");
+
+        self.append_node(
+            begin,
+            NodeKind::NumericFor {
+                keyword,
+                binding,
+                assignment,
+                start,
+                range_separator,
+                end,
+                step_separator,
+                step,
+                do_keyword,
+                body,
+                end_keyword,
+            },
+        )
+    }
+
+    fn generic_for(
+        &mut self,
+        start: TokenIndex,
+        keyword: TokenIndex,
+        first: NodeIndex,
+    ) -> NodeIndex {
+        let mut bindings = Vec::new();
+        let mut node = first;
+
+        loop {
+            let separator = self.consume(TokenKind::Symbol(Symbol::Comma));
+            bindings.push(ListEntry { node, separator });
+
+            if separator.is_none() {
+                break;
+            }
+
+            node = self.binding(false);
+        }
+
+        let bindings = self.append_list(bindings);
+        let in_keyword = self.expect(TokenKind::Keyword(Keyword::In), "expected in");
+        let values = self.expressions();
+        let do_keyword = self.expect(TokenKind::Keyword(Keyword::Do), "expected do");
+        self.loop_depth += 1;
+        let body = self.block(&[Keyword::End]);
+        self.loop_depth -= 1;
+        let end = self.expect(TokenKind::Keyword(Keyword::End), "expected end");
+
+        self.append_node(
+            start,
+            NodeKind::GenericFor {
+                keyword,
+                bindings,
+                in_keyword,
+                values,
+                do_keyword,
+                body,
+                end,
+            },
+        )
+    }
+
+    fn return_statement(&mut self) -> NodeIndex {
+        let start = self.position();
+        let keyword = self.take();
+
+        let values = if self.block_end() || self.at(TokenKind::Symbol(Symbol::Semicolon)) {
+            self.append_list([])
+        } else {
+            self.expressions()
+        };
+
+        self.append_node(start, NodeKind::Return { keyword, values })
+    }
+
+    fn function_name(&mut self) -> NodeIndex {
+        let start = self.position();
+        let mut path = Vec::new();
+        let mut node = self.name();
+
+        loop {
+            let separator = self.consume(TokenKind::Symbol(Symbol::Dot));
+            path.push(ListEntry { node, separator });
+
+            if separator.is_none() {
+                break;
+            }
+
+            node = self.name();
+        }
+
+        let path = self.append_list(path);
+        let colon = self.consume(TokenKind::Symbol(Symbol::Colon));
+        let method = colon.map(|_| self.name());
+
+        self.append_node(
+            start,
+            NodeKind::FunctionName {
+                path,
+                colon,
+                method,
+            },
+        )
+    }
+
+    pub(super) fn function_expression(&mut self) -> NodeIndex {
+        self.required("function", |parser| {
+            parser.nested(|parser| {
+                let start = parser.position();
+
+                let attributes = if parser.at_attributes() {
+                    Some(parser.attributes())
+                } else {
+                    None
+                };
+
+                let keyword = parser.expect(
+                    TokenKind::Keyword(Keyword::Function),
+                    "expected function after attributes",
+                );
+
+                Ok(parser.function(start, attributes, None, keyword, None))
+            })
+        })
+    }
+
+    fn function(
+        &mut self,
+        start: TokenIndex,
+        attributes: Option<NodeIndex>,
+        prefix: Option<TokenIndex>,
+        keyword: Option<TokenIndex>,
+        name: Option<NodeIndex>,
+    ) -> NodeIndex {
+        self.required("function", |parser| {
+            parser.nested(|parser| {
+                let (generics, parameters, returns) = parser.signature(false, false);
+                let loop_depth = parser.loop_depth;
+                parser.loop_depth = 0;
+                let body = Some(parser.block(&[Keyword::End]));
+                parser.loop_depth = loop_depth;
+                let end = parser.expect(TokenKind::Keyword(Keyword::End), "expected end");
+
+                Ok(parser.append_node(
+                    start,
+                    NodeKind::Function {
+                        attributes,
+                        prefix,
+                        keyword,
+                        name,
+                        generics,
+                        parameters,
+                        returns,
+                        body,
+                        end,
+                    },
+                ))
+            })
+        })
+    }
+
+    fn signature(
+        &mut self,
+        declaration: bool,
+        method: bool,
+    ) -> (Option<NodeIndex>, NodeIndex, Option<NodeIndex>) {
+        let generics = if self.at(TokenKind::Symbol(Symbol::LessThan)) {
+            if declaration && method {
+                self.diagnose(self.error("extern methods cannot have generic parameters"));
+            }
+
+            Some(self.generics(false))
+        } else {
+            None
+        };
+
+        let parameters = self.parameters(declaration, method);
+
+        let returns = if matches!(
+            self.current().kind,
+            TokenKind::Symbol(Symbol::Colon | Symbol::Arrow)
+        ) {
+            let start = self.position();
+
+            if self.at(TokenKind::Symbol(Symbol::Arrow)) {
+                self.diagnose(self.error("function return annotations require a colon"));
+            }
+
+            let colon = self.take();
+            let annotation = self.type_argument();
+
+            Some(self.append_node(start, NodeKind::Returns { colon, annotation }))
+        } else {
+            None
+        };
+
+        (generics, parameters, returns)
+    }
+
+    fn parameters(&mut self, declaration: bool, method: bool) -> NodeIndex {
+        self.required("parameters", |parser| {
+            parser.nested(|parser| Ok(parser.parameter_contents(declaration, method)))
+        })
+    }
+
+    fn parameter_contents(&mut self, declaration: bool, method: bool) -> NodeIndex {
+        let start = self.position();
+
+        let opening = self.expect(
+            TokenKind::Symbol(Symbol::LeftParenthesis),
+            "expected parameters",
+        );
+
+        let mut parameters = Vec::new();
+
+        if !self.at(TokenKind::Symbol(Symbol::RightParenthesis)) {
+            loop {
+                let begin = self.position();
+                let variadic = self.at(TokenKind::Symbol(Symbol::Ellipsis));
+
+                let node = if variadic {
+                    if method && parameters.is_empty() {
+                        self.diagnose(self.error("self must be the first method parameter"));
+                    }
+
+                    let ellipsis = self.take();
+                    let colon = self.consume(TokenKind::Symbol(Symbol::Colon));
+
+                    let annotation = colon.map(|_| {
+                        if self.at(TokenKind::Name)
+                            && self.lookahead() == TokenKind::Symbol(Symbol::Ellipsis)
+                        {
+                            self.pack()
+                        } else {
+                            self.annotation()
+                        }
+                    });
+
+                    if declaration && annotation.is_none() {
+                        self.diagnose(self.error("declaration parameters must be annotated"));
+                    }
+
+                    self.append_node(
+                        begin,
+                        NodeKind::Variadic {
+                            ellipsis,
+                            colon,
+                            annotation,
+                        },
+                    )
+                } else {
+                    let binding = self.binding(false);
+
+                    if let NodeKind::Binding {
+                        name, annotation, ..
+                    } = self.node(binding).kind
+                    {
+                        let first_self = method && parameters.is_empty();
+
+                        if first_self {
+                            if !matches!(self.node(name).kind, NodeKind::Name { token } if self.tokens[token.0].bytes(self.source) == b"self")
+                                || annotation.is_some()
+                            {
+                                self.diagnose(Diagnostic {
+                                    span: self.node(binding).span,
+                                    message: "self must be the unannotated first method parameter",
+                                });
+                            }
+                        } else if declaration && annotation.is_none() {
+                            self.diagnose(Diagnostic {
+                                span: self.node(binding).span,
+                                message: "declaration parameters must be annotated",
+                            });
+                        }
+                    }
+
+                    binding
+                };
+
+                let separator = if variadic {
+                    None
+                } else {
+                    self.consume(TokenKind::Symbol(Symbol::Comma))
+                };
+
+                parameters.push(ListEntry { node, separator });
+
+                if separator.is_none() {
+                    break;
+                }
+            }
+        }
+
+        if method && parameters.is_empty() {
+            self.diagnose(self.error("method declaration requires a self parameter"));
+        }
+
+        let closing = self.expect(
+            TokenKind::Symbol(Symbol::RightParenthesis),
+            "expected closing parameters",
+        );
+
+        let parameters = self.append_list(parameters);
+
+        self.append_node(
+            start,
+            NodeKind::Parameters {
+                opening,
+                parameters,
+                closing,
+            },
+        )
+    }
+
+    fn alias_statement(&mut self) -> NodeIndex {
+        let start = self.position();
+        let keyword = self.take();
+
+        if self.at(TokenKind::Keyword(Keyword::Function)) {
+            let function_keyword = Some(self.take());
+            let name = Some(self.name());
+
+            return self.function(start, None, Some(keyword), function_keyword, name);
+        }
+
+        let name = self.name();
+
+        let generics = if self.at(TokenKind::Symbol(Symbol::LessThan)) {
+            Some(self.generics(true))
+        } else {
+            None
+        };
+
+        let assignment = self.expect(
+            TokenKind::Symbol(Symbol::Assignment),
+            "expected type definition",
+        );
+
+        let annotation = self.annotation();
+
+        self.append_node(
+            start,
+            NodeKind::TypeAlias {
+                keyword,
+                name,
+                generics,
+                assignment,
+                annotation,
+            },
+        )
+    }
+
+    fn export_statement(&mut self, attributes: Option<NodeIndex>) -> Result<NodeIndex, Diagnostic> {
+        let start = attributes.map_or_else(|| self.position(), |node| self.node(node).tokens.start);
+        let keyword = self.take();
+
+        let declaration = if self.at(TokenKind::Keyword(Keyword::Function)) {
+            let begin = self.position();
+            let function_keyword = Some(self.take());
+            let name = Some(self.name());
+
+            self.function(begin, None, None, function_keyword, name)
+        } else {
+            if attributes.is_some() {
+                return Err(self.error("expected exported function after attributes"));
+            }
+
+            self.statement()?
+        };
+
+        if !matches!(
+            self.node(declaration).kind,
+            NodeKind::Local { .. }
+                | NodeKind::Constant { .. }
+                | NodeKind::Function { .. }
+                | NodeKind::TypeAlias { .. }
+                | NodeKind::Class { .. }
+                | NodeKind::Missing { .. }
+        ) {
+            return Err(self.error("expected exportable declaration"));
+        }
+
+        if let NodeKind::Function {
+            prefix: Some(prefix),
+            ..
+        } = self.node(declaration).kind
+        {
+            let token = self.tokens[prefix.0];
+
+            if token.bytes(self.source) == b"declare" {
+                return Err(self.error("declared functions cannot be exported"));
+            }
+
+            if token.kind == TokenKind::Keyword(Keyword::Local)
+                || token.bytes(self.source) == b"const"
+            {
+                self.diagnose(Diagnostic {
+                    span: token.span,
+                    message: "exported functions must not have a local or const prefix",
+                });
+            }
+        }
+
+        Ok(self.append_node(
+            start,
+            NodeKind::Export {
+                attributes,
+                keyword,
+                declaration,
+            },
         ))
     }
 
-    fn function_name(&mut self) -> usize {
-        let start = self.current().span.start;
-        let mut children = vec![self.name()];
+    fn declaration_statement(
+        &mut self,
+        attributes: Option<NodeIndex>,
+    ) -> Result<NodeIndex, Diagnostic> {
+        let start = attributes.map_or_else(|| self.position(), |node| self.node(node).tokens.start);
+        let keyword = self.take();
 
-        while self.consume(TokenKind::Byte(b'.')) {
-            children.push(self.name());
-        }
+        let external = if self.named(b"extern") {
+            Some(self.take())
+        } else {
+            None
+        };
 
-        if self.byte(b':') {
-            children.push(self.leaf(Kind::Operator));
-            children.push(self.name());
-        }
-
-        self.node(Kind::FunctionName, start, children)
-    }
-
-    pub(super) fn function(&mut self, start: usize, kind: Kind, children: Vec<usize>) -> Parsed {
-        let diagnostics = self.builder.diagnostics.len();
-        let mut children = self.signature(children)?;
-        children.push(self.block(&[Keyword::End]));
-        self.close(Keyword::End);
-
-        let node = self.node(kind, start, children);
-        self.claim(node, diagnostics);
-
-        Ok(node)
-    }
-
-    fn signature(&mut self, mut children: Vec<usize>) -> Result<Vec<usize>, Diagnostic> {
-        if self.byte(b'<') {
-            children.push(self.generics(false)?);
-        }
-
-        children.push(self.parameters()?);
-
-        if self.consume(TokenKind::Byte(b':')) {
-            let begin = self.current().span.start;
-            let returns = self.type_argument()?;
-            children.push(self.node(Kind::Returns, begin, [returns]));
-        }
-
-        Ok(children)
-    }
-
-    pub(super) fn parameters(&mut self) -> Parsed {
-        self.scoped(Rule::Parameters { types: false }, Self::parameter_contents)
-    }
-
-    fn parameter_contents(&mut self) -> Parsed {
-        let begin = self.current().span.start;
-        self.expect(TokenKind::Byte(b'('), "expected parameters");
-        let mut parameters = Vec::new();
-
-        if !self.byte(b')') {
-            loop {
-                if self.at(TokenKind::Operator(Operator::Ellipsis)) {
-                    let begin = self.take().span.start;
-                    let mut annotation = Vec::new();
-
-                    if self.consume(TokenKind::Byte(b':')) {
-                        annotation.push(
-                            if self.at(TokenKind::Name)
-                                && self.next() == TokenKind::Operator(Operator::Ellipsis)
-                            {
-                                self.pack()?
-                            } else {
-                                self.annotation()?
-                            },
-                        );
-                    }
-
-                    parameters.push(self.node(Kind::Variadic, begin, annotation));
-                    break;
-                }
-
-                parameters.push(self.binding()?);
-
-                if !self.consume(TokenKind::Byte(b',')) {
-                    break;
-                }
+        let declaration = if external.is_some() {
+            if attributes.is_some() {
+                return Err(self.error("expected declared function after attributes"));
             }
-        }
-
-        self.expect(TokenKind::Byte(b')'), "expected closing parameters");
-
-        Ok(self.node(Kind::Parameters, begin, parameters))
-    }
-
-    fn alias(&mut self) -> Parsed {
-        let start = self.take().span.start;
-
-        if self.consume(TokenKind::Keyword(Keyword::Function)) {
-            let name = self.name();
-
-            return self.function(start, Kind::TypeFunction, vec![name]);
-        }
-
-        let mut children = vec![self.name()];
-
-        if self.byte(b'<') {
-            children.push(self.generics(true)?);
-        }
-
-        self.expect(TokenKind::Byte(b'='), "expected type definition");
-        children.push(self.annotation()?);
-
-        Ok(self.node(Kind::TypeAlias, start, children))
-    }
-
-    fn declaration(&mut self) -> Parsed {
-        let start = self.take().span.start;
-
-        if self.named(b"extern") {
-            self.take();
 
             if !self.named(b"type") {
-                let name = self.name();
-                let annotation = self.missing(self.error("expected extern type"), "extern type");
-
-                return Ok(self.node(Kind::Declaration, start, [name, annotation]));
+                return Err(self.error("expected extern type"));
             }
 
-            let class = self.class(true)?;
+            self.class_statement(true, None)
+        } else if self.at(TokenKind::Keyword(Keyword::Function)) {
+            let function_keyword = Some(self.take());
+            let name = Some(self.name());
 
-            return Ok(self.node(Kind::Declaration, start, [class]));
-        }
-
-        let function = self.consume(TokenKind::Keyword(Keyword::Function));
-        let mut children = vec![self.name()];
-
-        if function {
-            children = self.signature(children)?;
+            return Ok(self.declared_function(
+                start,
+                attributes,
+                Some(keyword),
+                function_keyword,
+                name,
+                false,
+            ));
         } else {
-            self.expect(TokenKind::Byte(b':'), "expected declared type");
-            children.push(self.declaration_annotation()?);
-        }
+            if attributes.is_some() {
+                return Err(self.error("expected declared function after attributes"));
+            }
 
-        Ok(self.node(Kind::Declaration, start, children))
+            let begin = self.position();
+            let name = self.name();
+            let colon = self.expect(TokenKind::Symbol(Symbol::Colon), "expected declared type");
+            let annotation = Some(self.declaration_annotation());
+
+            self.append_node(
+                begin,
+                NodeKind::Binding {
+                    name,
+                    colon,
+                    annotation,
+                },
+            )
+        };
+
+        Ok(self.append_node(
+            start,
+            NodeKind::Declaration {
+                keyword,
+                external,
+                declaration,
+            },
+        ))
     }
 
-    fn class(&mut self, external: bool) -> Parsed {
-        let start = self.take().span.start;
-        let mut children = vec![self.name()];
+    fn declared_function(
+        &mut self,
+        start: TokenIndex,
+        attributes: Option<NodeIndex>,
+        prefix: Option<TokenIndex>,
+        keyword: Option<TokenIndex>,
+        name: Option<NodeIndex>,
+        method: bool,
+    ) -> NodeIndex {
+        let (generics, parameters, returns) = self.signature(true, method);
 
-        if self.named(b"extends") {
-            let begin = self.take().span.start;
-            let reference_start = self.current().span.start;
-            let mut reference = self.name();
-
-            if !external {
-                if self.consume(TokenKind::Byte(b'.')) {
-                    let name = self.name();
-                    reference = self.node(Kind::Field, reference_start, [reference, name]);
-                } else if self.consume(TokenKind::Byte(b'[')) {
-                    let index = self.expression(0)?;
-                    self.expect(TokenKind::Byte(b']'), "expected closing superclass index");
-                    reference = self.node(Kind::Index, reference_start, [reference, index]);
-                }
-            }
-
-            children.push(self.node(Kind::Extends, begin, [reference]));
-        }
-
-        if external {
-            if self.named(b"with") {
-                self.take();
-            } else {
-                let start = self.current().span.start;
-                self.expectation(crate::Span { start, end: start }, Expected::Role("with"));
-                self.diagnose(self.error("expected with"));
-            }
-        }
-
-        while !self.block_end() {
-            let begin = self.current().span.start;
-            let cursor = self.cursor;
-
-            let attributes = if external
-                && matches!(
-                    self.current().kind,
-                    TokenKind::Attribute | TokenKind::AttributeOpen
-                ) {
-                Some(self.attributes()?)
-            } else {
-                None
-            };
-
-            let public = !external && self.named(b"public");
-
-            if public {
-                self.take();
-            }
-
-            if self.consume(TokenKind::Keyword(Keyword::Function)) {
-                let name = self.name();
-
-                let method = if external {
-                    if !self.byte(b'(') {
-                        self.diagnose(self.error("expected method parameters"));
-                    }
-
-                    let mut parts: Vec<_> = attributes.into_iter().collect();
-                    parts.push(name);
-                    let parts = self.signature(parts)?;
-
-                    self.node(Kind::Method, begin, parts)
-                } else {
-                    self.function(begin, Kind::Method, vec![name])?
-                };
-
-                children.push(method);
-            } else if attributes.is_some() {
-                self.diagnose(self.error("expected method after attributes"));
-
-                let mut parts: Vec<_> = attributes.into_iter().collect();
-                parts.push(self.name());
-                let parts = self.signature(parts)?;
-                children.push(self.node(Kind::Method, begin, parts));
-            } else if public || external {
-                children.push(if external {
-                    self.type_field(false)?
-                } else {
-                    let binding = self.binding()?;
-
-                    self.node(Kind::Property, begin, [binding])
-                });
-            } else {
-                let diagnostic = self.builder.diagnostics.len();
-                self.diagnose(self.error("expected class member"));
-                self.recover(cursor, &[Keyword::End]);
-                let recovery = self.node(Kind::Error, begin, []);
-                self.claim(recovery, diagnostic);
-                children.push(recovery);
-            }
-
-            if self.cursor == cursor {
-                self.take();
-            }
-        }
-
-        self.close(Keyword::End);
-
-        Ok(self.node(Kind::Class, start, children))
-    }
-
-    pub(super) fn block_end(&self) -> bool {
-        matches!(
-            self.current().kind,
-            TokenKind::Eof
-                | TokenKind::Keyword(
-                    Keyword::End | Keyword::Else | Keyword::ElseIf | Keyword::Until
-                )
+        self.append_node(
+            start,
+            NodeKind::Function {
+                attributes,
+                prefix,
+                keyword,
+                name,
+                generics,
+                parameters,
+                returns,
+                body: None,
+                end: None,
+            },
         )
     }
+
+    fn class_statement(&mut self, external: bool, open: Option<TokenIndex>) -> NodeIndex {
+        let start = open.unwrap_or_else(|| self.position());
+        let keyword = Some(self.take());
+        let name = self.name();
+
+        let extends = if self.named(b"extends") {
+            let begin = self.position();
+            let keyword = self.take();
+
+            let superclass = if external {
+                self.name()
+            } else {
+                self.class_reference()
+            };
+
+            Some(self.append_node(
+                begin,
+                NodeKind::Extends {
+                    keyword,
+                    superclass,
+                },
+            ))
+        } else {
+            None
+        };
+
+        let with = if external {
+            if self.named(b"with") {
+                Some(self.take())
+            } else {
+                self.diagnose(self.error("expected with"));
+
+                None
+            }
+        } else {
+            None
+        };
+
+        let mut members = Vec::new();
+        let mut indexed = false;
+
+        while !self.block_end() {
+            let begin = self.position();
+            let nodes = self.nodes.len();
+            let lists = self.lists.len();
+            let end = self.end;
+            let token_end = self.token_end;
+
+            let node = match self.nested(|parser| parser.class_member(external)) {
+                Ok(node) => node,
+
+                Err(diagnostic) => {
+                    self.nodes.truncate(nodes);
+                    self.lists.truncate(lists);
+                    self.cursor = begin.0;
+                    self.end = end;
+                    self.token_end = token_end;
+                    let node = self.missing("class member", diagnostic);
+
+                    members.push(ListEntry {
+                        node,
+                        separator: None,
+                    });
+
+                    self.recover(
+                        begin,
+                        &[
+                            TokenKind::Keyword(Keyword::End),
+                            TokenKind::Keyword(Keyword::Else),
+                            TokenKind::Keyword(Keyword::ElseIf),
+                            TokenKind::Keyword(Keyword::Until),
+                        ],
+                    )
+                }
+            };
+
+            if matches!(self.node(node).kind, NodeKind::TypeIndexer { .. }) {
+                if indexed {
+                    self.diagnose(Diagnostic {
+                        span: self.node(node).span,
+                        message: "extern type has more than one indexer",
+                    });
+                }
+
+                indexed = true;
+            }
+
+            let separator = self.consume(TokenKind::Symbol(Symbol::Semicolon));
+            members.push(ListEntry { node, separator });
+
+            if self.position() == begin {
+                let token = self.take();
+                let node = self.append_node(token, NodeKind::Error);
+
+                members.push(ListEntry {
+                    node,
+                    separator: None,
+                });
+            }
+        }
+
+        let end = self.expect(TokenKind::Keyword(Keyword::End), "expected end");
+        let members = self.append_list(members);
+
+        self.append_node(
+            start,
+            NodeKind::Class {
+                open,
+                keyword,
+                name,
+                extends,
+                with,
+                members,
+                end,
+            },
+        )
+    }
+
+    fn class_member(&mut self, external: bool) -> Result<NodeIndex, Diagnostic> {
+        let start = self.position();
+
+        let attributes = if self.at_attributes() {
+            if !external {
+                return Err(self.error("class method attributes are not allowed"));
+            }
+
+            Some(self.attributes())
+        } else {
+            None
+        };
+
+        let public = if !external && self.named(b"public") {
+            Some(self.take())
+        } else {
+            None
+        };
+
+        if self.at(TokenKind::Keyword(Keyword::Function)) {
+            let keyword = Some(self.take());
+            let name = Some(self.name());
+
+            let node = if external {
+                self.declared_function(start, attributes, None, keyword, name, true)
+            } else {
+                self.function(start, None, public, keyword, name)
+            };
+
+            if !external {
+                self.validate_method_self(node);
+            }
+
+            Ok(node)
+        } else if attributes.is_some() {
+            Err(self.error("expected method after attributes"))
+        } else if let Some(public) = public {
+            let binding = self.binding(false);
+
+            Ok(self.append_node(start, NodeKind::Property { public, binding }))
+        } else if external {
+            Ok(self.type_field(false))
+        } else {
+            Err(self.error("expected class member"))
+        }
+    }
+
+    fn validate_method_self(&mut self, function: NodeIndex) {
+        let NodeKind::Function { parameters, .. } = self.node(function).kind else {
+            return;
+        };
+
+        let NodeKind::Parameters { ref parameters, .. } = self.node(parameters).kind else {
+            return;
+        };
+
+        let Some(entry) = self.lists[parameters.0.clone()].first() else {
+            return;
+        };
+
+        let NodeKind::Binding {
+            name,
+            annotation: Some(annotation),
+            ..
+        } = self.node(entry.node).kind
+        else {
+            return;
+        };
+
+        if matches!(self.node(name).kind, NodeKind::Name { token } if self.tokens[token.0].bytes(self.source) == b"self")
+        {
+            self.diagnose(Diagnostic {
+                span: self.node(annotation).span,
+                message: "self parameter cannot have a type annotation",
+            });
+        }
+    }
+
+    fn class_reference(&mut self) -> NodeIndex {
+        let start = self.position();
+        let mut receiver = self.name();
+
+        loop {
+            if let Some(dot) = self.consume(TokenKind::Symbol(Symbol::Dot)) {
+                let name = self.name();
+
+                receiver = self.append_node(
+                    start,
+                    NodeKind::Field {
+                        receiver,
+                        dot,
+                        name,
+                    },
+                );
+            } else if let Some(opening) = self.consume(TokenKind::Symbol(Symbol::LeftBracket)) {
+                let key = self.expression();
+
+                let closing = self.expect(
+                    TokenKind::Symbol(Symbol::RightBracket),
+                    "expected closing superclass index",
+                );
+
+                receiver = self.append_node(
+                    start,
+                    NodeKind::Index {
+                        receiver,
+                        opening,
+                        key,
+                        closing,
+                    },
+                );
+            } else {
+                break;
+            }
+        }
+
+        receiver
+    }
+
+    fn at_attributes(&self) -> bool {
+        matches!(
+            self.current().kind,
+            TokenKind::Attribute | TokenKind::Symbol(Symbol::AttributeOpen)
+        )
+    }
+}
+
+fn compound(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Symbol(
+            Symbol::AddAssignment
+                | Symbol::SubtractAssignment
+                | Symbol::MultiplyAssignment
+                | Symbol::DivideAssignment
+                | Symbol::FloorDivideAssignment
+                | Symbol::ModuloAssignment
+                | Symbol::PowerAssignment
+                | Symbol::ConcatenateAssignment
+        )
+    )
+}
+
+fn continues_expression(kind: TokenKind) -> bool {
+    compound(kind)
+        || matches!(
+            kind,
+            TokenKind::QuotedString
+                | TokenKind::RawString
+                | TokenKind::Symbol(
+                    Symbol::Assignment
+                        | Symbol::LeftParenthesis
+                        | Symbol::Dot
+                        | Symbol::LeftBracket
+                        | Symbol::Colon
+                        | Symbol::LeftBrace
+                        | Symbol::Comma
+                        | Symbol::LessThan
+                        | Symbol::GreaterThan
+                        | Symbol::DoubleColon
+                        | Symbol::Add
+                        | Symbol::Subtract
+                        | Symbol::Multiply
+                        | Symbol::Divide
+                        | Symbol::FloorDivide
+                        | Symbol::Modulo
+                        | Symbol::Power
+                        | Symbol::Concatenate
+                        | Symbol::Equal
+                        | Symbol::NotEqual
+                        | Symbol::LessThanOrEqual
+                        | Symbol::GreaterThanOrEqual
+                        | Symbol::Ellipsis
+                )
+        )
 }

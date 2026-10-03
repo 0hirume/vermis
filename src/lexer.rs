@@ -1,795 +1,457 @@
-use crate::parser::control::Execution;
-use crate::syntax::{InterpolatedKind, Keyword, LexError, Operator, Span, Token, TokenKind};
-use std::{collections::HashSet, fmt, sync::Arc};
+use std::iter::FusedIterator;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Brace {
-    Interpolated,
+use crate::token::{Keyword, Span, Symbol, Token, TokenKind};
+
+enum Brace {
     Normal,
+    Interpolation,
 }
 
-struct Link {
-    brace: Brace,
-    tail: Option<Arc<Link>>,
-}
-
-impl Drop for Link {
-    fn drop(&mut self) {
-        let mut tail = self.tail.take();
-
-        while let Some(mut link) = tail.and_then(Arc::into_inner) {
-            tail = link.tail.take();
-        }
-    }
-}
-
-#[derive(Clone, Default)]
-pub(crate) struct Braces {
-    head: Option<Arc<Link>>,
-    length: usize,
-}
-
-impl Braces {
-    pub(crate) fn len(&self) -> usize {
-        self.length
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.length == 0
-    }
-
-    pub(crate) fn equivalent(&self, other: &Self, pairs: &mut HashSet<(usize, usize)>) -> bool {
-        if self.length != other.length {
-            return false;
-        }
-
-        let mut left = self.head.as_ref();
-        let mut right = other.head.as_ref();
-        let mut verified = Vec::new();
-
-        while let (Some(first), Some(second)) = (left, right) {
-            if Arc::ptr_eq(first, second) {
-                break;
-            }
-
-            let pair = (Arc::as_ptr(first) as usize, Arc::as_ptr(second) as usize);
-
-            if pairs.contains(&pair) {
-                break;
-            }
-
-            if first.brace != second.brace {
-                return false;
-            }
-
-            verified.push(pair);
-            left = first.tail.as_ref();
-            right = second.tail.as_ref();
-        }
-
-        pairs.extend(verified);
-
-        true
-    }
-
-    fn push(&mut self, brace: Brace) {
-        self.head = Some(Arc::new(Link {
-            brace,
-            tail: self.head.take(),
-        }));
-
-        self.length += 1;
-    }
-
-    fn pop(&mut self) -> Option<Brace> {
-        let head = self.head.take()?;
-        self.head.clone_from(&head.tail);
-        self.length -= 1;
-
-        Some(head.brace)
-    }
-}
-
-impl<const LENGTH: usize> From<[Brace; LENGTH]> for Braces {
-    fn from(braces: [Brace; LENGTH]) -> Self {
-        let mut stack = Self::default();
-
-        for brace in braces {
-            stack.push(brace);
-        }
-
-        stack
-    }
-}
-
-impl PartialEq for Braces {
-    fn eq(&self, other: &Self) -> bool {
-        if self.length != other.length {
-            return false;
-        }
-
-        let mut left = self.head.as_ref();
-        let mut right = other.head.as_ref();
-
-        while let (Some(first), Some(second)) = (left, right) {
-            if Arc::ptr_eq(first, second) {
-                return true;
-            }
-
-            if first.brace != second.brace {
-                return false;
-            }
-
-            left = first.tail.as_ref();
-            right = second.tail.as_ref();
-        }
-
-        true
-    }
-}
-
-impl Eq for Braces {}
-
-impl fmt::Debug for Braces {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut list = formatter.debug_list();
-        let mut cursor = self.head.as_ref();
-
-        while let Some(link) = cursor {
-            list.entry(&link.brace);
-            cursor = link.tail.as_ref();
-        }
-
-        list.finish()
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct State {
-    pub braces: Braces,
-}
-
-impl State {
-    pub(crate) fn equivalent(&self, other: &Self, pairs: &mut HashSet<(usize, usize)>) -> bool {
-        self.braces.equivalent(&other.braces, pairs)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Checkpoint {
-    pub cursor: usize,
-    pub state: State,
-    pub finished: bool,
-}
-
-impl Checkpoint {
-    pub(crate) fn equivalent(&self, other: &Self, pairs: &mut HashSet<(usize, usize)>) -> bool {
-        self.cursor == other.cursor
-            && self.finished == other.finished
-            && self.state.equivalent(&other.state, pairs)
-    }
-}
-
+/// Lossless byte lexer, including trivia and a final end-of-input token.
 pub struct Lexer<'source> {
     source: &'source [u8],
     cursor: usize,
-    braces: Braces,
+    braces: Vec<Brace>,
     finished: bool,
-    execution: Option<Arc<Execution>>,
 }
 
 impl<'source> Lexer<'source> {
-    #[must_use]
+    /// Starts lexing the given source bytes.
     pub fn new(source: &'source [u8]) -> Self {
         Self {
             source,
             cursor: 0,
-            braces: Braces::default(),
+            braces: Vec::new(),
             finished: false,
-            execution: None,
         }
     }
 
-    pub(crate) fn state(&self) -> State {
-        State {
-            braces: self.braces.clone(),
+    fn peek(&self, distance: usize) -> Option<u8> {
+        self.source.get(self.cursor + distance).copied()
+    }
+
+    fn consume(&mut self, byte: u8) -> bool {
+        if self.peek(0) == Some(byte) {
+            self.cursor += 1;
+
+            true
+        } else {
+            false
         }
     }
 
-    pub(crate) fn checkpoint(&self) -> Checkpoint {
-        Checkpoint {
-            cursor: self.cursor,
-            state: self.state(),
-            finished: self.finished,
-        }
-    }
+    fn scan(&mut self, byte: u8) -> TokenKind {
+        match byte {
+            byte if is_space(byte) => {
+                while self.peek(0).is_some_and(is_space) {
+                    self.cursor += 1;
+                }
 
-    pub(crate) fn restore(&mut self, checkpoint: &Checkpoint) {
-        self.cursor = checkpoint.cursor;
-        self.braces.clone_from(&checkpoint.state.braces);
-        self.finished = checkpoint.finished;
-    }
+                TokenKind::Whitespace
+            }
 
-    pub(crate) fn from_state(source: &'source [u8], cursor: usize, state: &State) -> Self {
-        let mut lexer = Self::new(source);
-
-        lexer.restore(&Checkpoint {
-            cursor,
-            state: state.clone(),
-            finished: false,
-        });
-
-        lexer
-    }
-
-    pub(crate) fn controlled(
-        source: &'source [u8],
-        cursor: usize,
-        state: &State,
-        execution: Option<Arc<Execution>>,
-    ) -> Self {
-        let mut lexer = Self::from_state(source, cursor, state);
-        lexer.execution = execution;
-
-        lexer
-    }
-
-    fn active(&self) -> bool {
-        self.execution
-            .as_ref()
-            .is_none_or(|execution| execution.poll())
-    }
-
-    fn required(&self) -> u8 {
-        self.current().unwrap_or_else(|| {
-            assert!(!self.active(), "scanner requires an input byte");
-
-            0
-        })
-    }
-
-    fn brace(&mut self, brace: Brace) {
-        if self
-            .execution
-            .as_ref()
-            .is_none_or(|execution| execution.depth(self.braces.len().saturating_add(1)))
-        {
-            self.braces.push(brace);
-        }
-    }
-
-    fn current(&self) -> Option<u8> {
-        self.peek(0)
-    }
-
-    fn peek(&self, lookahead: usize) -> Option<u8> {
-        if !self.active() {
-            return None;
-        }
-
-        self.source.get(self.cursor + lookahead).copied()
-    }
-
-    fn advance(&mut self) {
-        self.cursor += 1;
-    }
-
-    fn scan(&mut self) -> TokenKind {
-        match self.required() {
-            byte if is_space(byte) => self.whitespace(),
-
-            b'-' => self.minus(),
-            b'[' => self.bracket(),
-            b'{' => self.left_brace(),
-            b'}' => self.right_brace(),
-
-            b'=' => self.equal(),
-            b'<' => self.less(),
-            b'>' => self.greater(),
-            b'~' => self.tilde(),
-
-            b'\'' | b'"' => self.quoted_string(),
-            b'`' => self.interpolated_string(),
-
-            b'.' => self.dot(),
-            b'+' => self.plus(),
-            b'/' => self.slash(),
-            b'*' => self.star(),
-            b'%' => self.percent(),
-            b'^' => self.caret(),
-            b':' => self.colon(),
-            b'@' => self.attribute(),
-
-            byte if byte.is_ascii_digit() => self.number(),
             byte if is_name_start(byte) => self.name(),
-            byte if byte & 0x80 != 0 => self.broken_unicode(),
+            b'0'..=b'9' => self.number(),
+            b'\'' | b'"' => self.quoted_string(byte),
+
+            b'`' => {
+                self.cursor += 1;
+
+                self.interpolated_string(
+                    TokenKind::InterpolatedStringStart,
+                    TokenKind::InterpolatedStringSimple,
+                )
+            }
+
+            b'[' => {
+                let (equals, closed) = self.separator(b'[');
+
+                if closed {
+                    self.long_string(equals, TokenKind::RawString, TokenKind::MalformedString)
+                } else if equals == 0 {
+                    TokenKind::Symbol(Symbol::LeftBracket)
+                } else {
+                    TokenKind::MalformedString
+                }
+            }
+
+            b'-' => {
+                self.cursor += 1;
+
+                if self.consume(b'-') {
+                    self.comment()
+                } else if self.consume(b'>') {
+                    TokenKind::Symbol(Symbol::Arrow)
+                } else if self.consume(b'=') {
+                    TokenKind::Symbol(Symbol::SubtractAssignment)
+                } else {
+                    TokenKind::Symbol(Symbol::Subtract)
+                }
+            }
+
+            b'.' => {
+                self.cursor += 1;
+
+                if self.consume(b'.') {
+                    let symbol = if self.consume(b'.') {
+                        Symbol::Ellipsis
+                    } else if self.consume(b'=') {
+                        Symbol::ConcatenateAssignment
+                    } else {
+                        Symbol::Concatenate
+                    };
+
+                    TokenKind::Symbol(symbol)
+                } else if self.peek(0).is_some_and(|byte| byte.is_ascii_digit()) {
+                    self.number()
+                } else {
+                    TokenKind::Symbol(Symbol::Dot)
+                }
+            }
+
+            byte => self.punctuation(byte),
+        }
+    }
+
+    fn punctuation(&mut self, byte: u8) -> TokenKind {
+        match byte {
+            b'/' => {
+                self.cursor += 1;
+
+                let symbol = if self.consume(b'/') {
+                    if self.consume(b'=') {
+                        Symbol::FloorDivideAssignment
+                    } else {
+                        Symbol::FloorDivide
+                    }
+                } else if self.consume(b'=') {
+                    Symbol::DivideAssignment
+                } else {
+                    Symbol::Divide
+                };
+
+                TokenKind::Symbol(symbol)
+            }
+
+            b'+' => self.assignment(Symbol::Add, Symbol::AddAssignment),
+            b'*' => self.assignment(Symbol::Multiply, Symbol::MultiplyAssignment),
+            b'%' => self.assignment(Symbol::Modulo, Symbol::ModuloAssignment),
+            b'^' => self.assignment(Symbol::Power, Symbol::PowerAssignment),
+            b'=' => self.assignment(Symbol::Assignment, Symbol::Equal),
+            b'<' => self.assignment(Symbol::LessThan, Symbol::LessThanOrEqual),
+            b'>' => self.assignment(Symbol::GreaterThan, Symbol::GreaterThanOrEqual),
+            b'~' => self.assignment(Symbol::Tilde, Symbol::NotEqual),
+
+            b':' => {
+                self.cursor += 1;
+
+                let symbol = if self.consume(b':') {
+                    Symbol::DoubleColon
+                } else {
+                    Symbol::Colon
+                };
+
+                TokenKind::Symbol(symbol)
+            }
+
+            b'{' => {
+                if !self.braces.is_empty() {
+                    self.braces.push(Brace::Normal);
+                }
+
+                self.symbol(Symbol::LeftBrace)
+            }
+
+            b'}' => {
+                self.cursor += 1;
+
+                if matches!(self.braces.pop(), Some(Brace::Interpolation)) {
+                    self.interpolated_string(
+                        TokenKind::InterpolatedStringMiddle,
+                        TokenKind::InterpolatedStringEnd,
+                    )
+                } else {
+                    TokenKind::Symbol(Symbol::RightBrace)
+                }
+            }
+
+            b'@' => {
+                self.cursor += 1;
+
+                if self.consume(b'[') {
+                    TokenKind::Symbol(Symbol::AttributeOpen)
+                } else {
+                    if self.peek(0).is_some_and(is_name_start) {
+                        self.name_body();
+                    }
+
+                    TokenKind::Attribute
+                }
+            }
+
+            b'(' => self.symbol(Symbol::LeftParenthesis),
+            b')' => self.symbol(Symbol::RightParenthesis),
+            b']' => self.symbol(Symbol::RightBracket),
+            b',' => self.symbol(Symbol::Comma),
+            b';' => self.symbol(Symbol::Semicolon),
+            b'#' => self.symbol(Symbol::Length),
+            b'?' => self.symbol(Symbol::QuestionMark),
+            b'&' => self.symbol(Symbol::Ampersand),
+            b'|' => self.symbol(Symbol::Pipe),
+            0x80..=0xff => self.unicode(),
 
             byte => {
-                self.advance();
+                self.cursor += 1;
 
-                TokenKind::Byte(byte)
+                TokenKind::InvalidCharacter { byte }
             }
         }
     }
 
-    fn whitespace(&mut self) -> TokenKind {
-        while self.current().is_some_and(is_space) {
-            self.advance();
-        }
+    fn symbol(&mut self, symbol: Symbol) -> TokenKind {
+        self.cursor += 1;
 
-        TokenKind::Whitespace
+        TokenKind::Symbol(symbol)
     }
 
-    fn minus(&mut self) -> TokenKind {
-        self.advance();
+    fn assignment(&mut self, plain: Symbol, paired: Symbol) -> TokenKind {
+        self.cursor += 1;
 
-        match self.current() {
-            Some(b'>') => {
-                self.advance();
-
-                TokenKind::Operator(Operator::Arrow)
-            }
-
-            Some(b'=') => {
-                self.advance();
-
-                TokenKind::Operator(Operator::SubtractAssign)
-            }
-
-            Some(b'-') => self.comment(),
-            _ => TokenKind::Byte(b'-'),
-        }
+        TokenKind::Symbol(if self.consume(b'=') { paired } else { plain })
     }
 
-    fn comment(&mut self) -> TokenKind {
-        self.advance();
-
-        if self.current() == Some(b'[')
-            && let Separator::Valid(depth) = self.long_separator()
+    fn name_body(&mut self) {
+        while self
+            .peek(0)
+            .is_some_and(|byte| is_name_start(byte) || byte.is_ascii_digit())
         {
-            self.advance();
-
-            return self.long_body(depth, TokenKind::BlockComment, LexError::BrokenComment);
+            self.cursor += 1;
         }
-
-        while !matches!(self.current(), None | Some(0 | b'\r' | b'\n')) {
-            self.advance();
-        }
-
-        TokenKind::Comment
-    }
-
-    fn bracket(&mut self) -> TokenKind {
-        match self.long_separator() {
-            Separator::Valid(depth) => {
-                self.advance();
-
-                self.long_body(depth, TokenKind::RawString, LexError::BrokenString)
-            }
-
-            Separator::Malformed(0) => TokenKind::Byte(b'['),
-            Separator::Malformed(_) => TokenKind::Error(LexError::BrokenString),
-        }
-    }
-
-    fn long_separator(&mut self) -> Separator {
-        let bracket = self.required();
-
-        self.advance();
-
-        let mut depth = 0;
-
-        while self.current() == Some(b'=') {
-            depth += 1;
-            self.advance();
-        }
-
-        if self.current() == Some(bracket) {
-            Separator::Valid(depth)
-        } else {
-            Separator::Malformed(depth)
-        }
-    }
-
-    fn long_body(&mut self, depth: usize, complete: TokenKind, broken: LexError) -> TokenKind {
-        loop {
-            match self.current() {
-                None | Some(0) => return TokenKind::Error(broken),
-
-                Some(b']') => {
-                    if self.long_separator() == Separator::Valid(depth) {
-                        self.advance();
-
-                        return complete;
-                    }
-                }
-
-                Some(_) => self.advance(),
-            }
-        }
-    }
-
-    fn left_brace(&mut self) -> TokenKind {
-        self.advance();
-
-        if !self.braces.is_empty() {
-            self.brace(Brace::Normal);
-        }
-
-        TokenKind::Byte(b'{')
-    }
-
-    fn right_brace(&mut self) -> TokenKind {
-        self.advance();
-
-        match self.braces.pop() {
-            Some(Brace::Interpolated) => {
-                self.interpolated_section(InterpolatedKind::Middle, InterpolatedKind::End)
-            }
-
-            Some(Brace::Normal) | None => TokenKind::Byte(b'}'),
-        }
-    }
-
-    fn equal(&mut self) -> TokenKind {
-        self.advance();
-
-        if self.current() == Some(b'=') {
-            self.advance();
-
-            TokenKind::Operator(Operator::Equal)
-        } else {
-            TokenKind::Byte(b'=')
-        }
-    }
-
-    fn less(&mut self) -> TokenKind {
-        self.advance();
-
-        if self.current() == Some(b'=') {
-            self.advance();
-
-            TokenKind::Operator(Operator::LessEqual)
-        } else {
-            TokenKind::Byte(b'<')
-        }
-    }
-
-    fn greater(&mut self) -> TokenKind {
-        self.advance();
-
-        if self.current() == Some(b'=') {
-            self.advance();
-
-            TokenKind::Operator(Operator::GreaterEqual)
-        } else {
-            TokenKind::Byte(b'>')
-        }
-    }
-
-    fn tilde(&mut self) -> TokenKind {
-        self.advance();
-
-        if self.current() == Some(b'=') {
-            self.advance();
-
-            TokenKind::Operator(Operator::NotEqual)
-        } else {
-            TokenKind::Byte(b'~')
-        }
-    }
-
-    fn quoted_string(&mut self) -> TokenKind {
-        let delimiter = self.required();
-        self.advance();
-
-        loop {
-            match self.current() {
-                None | Some(0 | b'\r' | b'\n') => {
-                    return TokenKind::Error(LexError::BrokenString);
-                }
-
-                Some(byte) if byte == delimiter => {
-                    self.advance();
-
-                    return TokenKind::QuotedString;
-                }
-
-                Some(b'\\') => self.backslash(),
-                Some(_) => self.advance(),
-            }
-        }
-    }
-
-    fn backslash(&mut self) {
-        self.advance();
-
-        match self.current() {
-            Some(b'\r') => {
-                self.advance();
-
-                if self.current() == Some(b'\n') {
-                    self.advance();
-                }
-            }
-
-            None | Some(0) => {}
-
-            Some(b'z') => {
-                self.advance();
-
-                while self.current().is_some_and(is_space) {
-                    self.advance();
-                }
-            }
-
-            Some(_) => self.advance(),
-        }
-    }
-
-    fn interpolated_string(&mut self) -> TokenKind {
-        self.advance();
-
-        self.interpolated_section(InterpolatedKind::Begin, InterpolatedKind::Simple)
-    }
-
-    fn interpolated_section(
-        &mut self,
-        expression: InterpolatedKind,
-        complete: InterpolatedKind,
-    ) -> TokenKind {
-        loop {
-            match self.current() {
-                None | Some(0 | b'\r' | b'\n') => {
-                    return TokenKind::Error(LexError::BrokenString);
-                }
-
-                Some(b'\\') if self.peek(1) == Some(b'u') && self.peek(2) == Some(b'{') => {
-                    self.advance();
-                    self.advance();
-                    self.advance();
-                }
-
-                Some(b'\\') => self.backslash(),
-
-                Some(b'{') => {
-                    self.brace(Brace::Interpolated);
-
-                    if self.peek(1) == Some(b'{') {
-                        self.advance();
-                        self.advance();
-
-                        return TokenKind::Error(LexError::BrokenInterpolatedDoubleBrace);
-                    }
-
-                    self.advance();
-
-                    return TokenKind::Interpolated(expression);
-                }
-
-                Some(b'`') => {
-                    self.advance();
-
-                    return TokenKind::Interpolated(complete);
-                }
-
-                Some(_) => self.advance(),
-            }
-        }
-    }
-
-    fn dot(&mut self) -> TokenKind {
-        self.advance();
-
-        if self.current() == Some(b'.') {
-            self.advance();
-
-            return match self.current() {
-                Some(b'.') => {
-                    self.advance();
-
-                    TokenKind::Operator(Operator::Ellipsis)
-                }
-
-                Some(b'=') => {
-                    self.advance();
-
-                    TokenKind::Operator(Operator::ConcatAssign)
-                }
-
-                _ => TokenKind::Operator(Operator::Concat),
-            };
-        }
-
-        if self.current().is_some_and(|byte| byte.is_ascii_digit()) {
-            return self.number();
-        }
-
-        TokenKind::Byte(b'.')
-    }
-
-    fn plus(&mut self) -> TokenKind {
-        self.assignment(b'+', Operator::AddAssign)
-    }
-
-    fn slash(&mut self) -> TokenKind {
-        self.advance();
-
-        match self.current() {
-            Some(b'=') => {
-                self.advance();
-
-                TokenKind::Operator(Operator::DivideAssign)
-            }
-
-            Some(b'/') => {
-                self.advance();
-
-                if self.current() == Some(b'=') {
-                    self.advance();
-
-                    TokenKind::Operator(Operator::FloorDivideAssign)
-                } else {
-                    TokenKind::Operator(Operator::FloorDivide)
-                }
-            }
-
-            _ => TokenKind::Byte(b'/'),
-        }
-    }
-
-    fn star(&mut self) -> TokenKind {
-        self.assignment(b'*', Operator::MultiplyAssign)
-    }
-
-    fn percent(&mut self) -> TokenKind {
-        self.assignment(b'%', Operator::ModuloAssign)
-    }
-
-    fn caret(&mut self) -> TokenKind {
-        self.assignment(b'^', Operator::PowerAssign)
-    }
-
-    fn assignment(&mut self, byte: u8, operator: Operator) -> TokenKind {
-        self.advance();
-
-        if self.current() == Some(b'=') {
-            self.advance();
-
-            TokenKind::Operator(operator)
-        } else {
-            TokenKind::Byte(byte)
-        }
-    }
-
-    fn colon(&mut self) -> TokenKind {
-        self.advance();
-
-        if self.current() == Some(b':') {
-            self.advance();
-
-            TokenKind::Operator(Operator::DoubleColon)
-        } else {
-            TokenKind::Byte(b':')
-        }
-    }
-
-    fn attribute(&mut self) -> TokenKind {
-        self.advance();
-
-        if self.current() == Some(b'[') {
-            self.advance();
-
-            return TokenKind::AttributeOpen;
-        }
-
-        if self.current().is_some_and(is_name_start) {
-            self.name_body();
-        }
-
-        TokenKind::Attribute
     }
 
     fn name(&mut self) -> TokenKind {
         let start = self.cursor;
         self.name_body();
 
-        classify_name(&self.source[start..self.cursor])
-    }
+        let keyword = match &self.source[start..self.cursor] {
+            b"and" => Keyword::And,
+            b"break" => Keyword::Break,
+            b"do" => Keyword::Do,
+            b"else" => Keyword::Else,
+            b"elseif" => Keyword::ElseIf,
+            b"end" => Keyword::End,
+            b"false" => Keyword::False,
+            b"for" => Keyword::For,
+            b"function" => Keyword::Function,
+            b"if" => Keyword::If,
+            b"in" => Keyword::In,
+            b"local" => Keyword::Local,
+            b"nil" => Keyword::Nil,
+            b"not" => Keyword::Not,
+            b"or" => Keyword::Or,
+            b"repeat" => Keyword::Repeat,
+            b"return" => Keyword::Return,
+            b"then" => Keyword::Then,
+            b"true" => Keyword::True,
+            b"until" => Keyword::Until,
+            b"while" => Keyword::While,
+            _ => return TokenKind::Name,
+        };
 
-    fn name_body(&mut self) {
-        self.advance();
-
-        while self.current().is_some_and(is_name_continue) {
-            self.advance();
-        }
+        TokenKind::Keyword(keyword)
     }
 
     fn number(&mut self) -> TokenKind {
         while self
-            .current()
+            .peek(0)
             .is_some_and(|byte| byte.is_ascii_digit() || matches!(byte, b'.' | b'_'))
         {
-            self.advance();
+            self.cursor += 1;
         }
 
-        if matches!(self.current(), Some(b'e' | b'E')) {
-            self.advance();
+        if matches!(self.peek(0), Some(b'e' | b'E')) {
+            self.cursor += 1;
 
-            if matches!(self.current(), Some(b'+' | b'-')) {
-                self.advance();
+            if matches!(self.peek(0), Some(b'+' | b'-')) {
+                self.cursor += 1;
             }
         }
 
-        while self.current().is_some_and(is_name_continue) {
-            self.advance();
-        }
+        self.name_body();
 
         TokenKind::Number
     }
 
-    fn broken_unicode(&mut self) -> TokenKind {
-        let first = self.required();
+    fn separator(&mut self, bracket: u8) -> (usize, bool) {
+        self.cursor += 1;
+        let start = self.cursor;
 
-        let (size, prefix) = if first & 0b1110_0000 == 0b1100_0000 {
-            (2, first & 0b0001_1111)
-        } else if first & 0b1111_0000 == 0b1110_0000 {
-            (3, first & 0b0000_1111)
-        } else if first & 0b1111_1000 == 0b1111_0000 {
-            (4, first & 0b0000_0111)
-        } else {
-            self.advance();
+        while self.consume(b'=') {}
 
-            return TokenKind::Error(LexError::BrokenUnicode { codepoint: 0 });
-        };
+        (self.cursor - start, self.peek(0) == Some(bracket))
+    }
 
-        let mut codepoint = u32::from(prefix);
+    fn long_string(&mut self, equals: usize, kind: TokenKind, malformed: TokenKind) -> TokenKind {
+        self.cursor += 1;
 
-        self.advance();
-
-        for _ in 1..size {
-            let Some(byte) = self.current() else {
-                return TokenKind::Error(LexError::BrokenUnicode { codepoint: 0 });
-            };
-
-            if byte & 0b1100_0000 != 0b1000_0000 {
-                return TokenKind::Error(LexError::BrokenUnicode { codepoint: 0 });
+        while let Some(byte) = self.peek(0) {
+            if byte == 0 {
+                break;
             }
 
-            codepoint = (codepoint << 6) | u32::from(byte & 0b0011_1111);
+            if byte == b']' {
+                let (closing_equals, closed) = self.separator(b']');
 
-            self.advance();
+                if closed && closing_equals == equals {
+                    self.cursor += 1;
+
+                    return kind;
+                }
+            } else {
+                self.cursor += 1;
+            }
         }
 
-        TokenKind::Error(LexError::BrokenUnicode { codepoint })
+        malformed
+    }
+
+    fn comment(&mut self) -> TokenKind {
+        if self.peek(0) == Some(b'[') {
+            let (equals, closed) = self.separator(b'[');
+
+            if closed {
+                return self.long_string(
+                    equals,
+                    TokenKind::BlockComment,
+                    TokenKind::MalformedComment,
+                );
+            }
+        }
+
+        while self
+            .peek(0)
+            .is_some_and(|byte| !matches!(byte, 0 | b'\r' | b'\n'))
+        {
+            self.cursor += 1;
+        }
+
+        TokenKind::Comment
+    }
+
+    fn escape(&mut self) {
+        self.cursor += 1;
+
+        match self.peek(0) {
+            Some(b'\r') => {
+                self.cursor += 1;
+                self.consume(b'\n');
+            }
+
+            Some(b'z') => {
+                self.cursor += 1;
+
+                while self.peek(0).is_some_and(is_space) {
+                    self.cursor += 1;
+                }
+            }
+
+            None | Some(0) => {}
+            Some(_) => self.cursor += 1,
+        }
+    }
+
+    fn quoted_string(&mut self, quote: u8) -> TokenKind {
+        self.cursor += 1;
+
+        loop {
+            match self.peek(0) {
+                Some(byte) if byte == quote => {
+                    self.cursor += 1;
+
+                    return TokenKind::QuotedString;
+                }
+
+                None | Some(0 | b'\r' | b'\n') => return TokenKind::MalformedString,
+                Some(b'\\') => self.escape(),
+                Some(_) => self.cursor += 1,
+            }
+        }
+    }
+
+    fn interpolated_string(&mut self, continuation: TokenKind, ending: TokenKind) -> TokenKind {
+        loop {
+            match self.peek(0) {
+                Some(b'`') => {
+                    self.cursor += 1;
+
+                    return ending;
+                }
+
+                None | Some(0 | b'\r' | b'\n') => return TokenKind::MalformedString,
+
+                Some(b'\\') if self.peek(1) == Some(b'u') && self.peek(2) == Some(b'{') => {
+                    self.cursor += 3;
+                }
+
+                Some(b'\\') => self.escape(),
+
+                Some(b'{') => {
+                    self.braces.push(Brace::Interpolation);
+                    self.cursor += 1;
+
+                    if self.consume(b'{') {
+                        return TokenKind::InvalidInterpolationDoubleBrace;
+                    }
+
+                    return continuation;
+                }
+
+                Some(_) => self.cursor += 1,
+            }
+        }
+    }
+
+    fn unicode(&mut self) -> TokenKind {
+        let first = self.source[self.cursor];
+        self.cursor += 1;
+
+        let (width, mut codepoint) = match first {
+            0xc0..=0xdf => (2, u32::from(first & 0x1f)),
+            0xe0..=0xef => (3, u32::from(first & 0x0f)),
+            0xf0..=0xf7 => (4, u32::from(first & 0x07)),
+            _ => return TokenKind::InvalidUnicode { codepoint: 0 },
+        };
+
+        for _ in 1..width {
+            let Some(byte @ 0x80..=0xbf) = self.peek(0) else {
+                return TokenKind::InvalidUnicode { codepoint: 0 };
+            };
+
+            self.cursor += 1;
+            codepoint = (codepoint << 6) | u32::from(byte & 0x3f);
+        }
+
+        TokenKind::InvalidUnicode { codepoint }
     }
 }
 
 impl Iterator for Lexer<'_> {
     type Item = Token;
 
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.finished || !self.active() {
+    fn next(&mut self) -> Option<Token> {
+        if self.finished {
             return None;
         }
 
         let start = self.cursor;
 
-        let kind = if self.cursor == self.source.len() {
-            self.finished = true;
-
-            TokenKind::Eof
+        let kind = if let Some(byte) = self.peek(0) {
+            self.scan(byte)
         } else {
-            self.scan()
-        };
-
-        if !self.active() {
             self.finished = true;
 
-            return None;
-        }
-
-        debug_assert!(kind == TokenKind::Eof || self.cursor > start);
+            TokenKind::EndOfFile
+        };
 
         Some(Token {
             kind,
@@ -801,148 +463,12 @@ impl Iterator for Lexer<'_> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Separator {
-    Valid(usize),
-    Malformed(usize),
-}
-
-#[must_use]
-fn classify_name(name: &[u8]) -> TokenKind {
-    match Keyword::from_name(name) {
-        Some(keyword) => TokenKind::Keyword(keyword),
-        None => TokenKind::Name,
-    }
-}
-
-fn is_space(byte: u8) -> bool {
-    matches!(byte, b' ' | b'\t' | b'\r' | b'\n' | 0x0b | 0x0c)
-}
+impl FusedIterator for Lexer<'_> {}
 
 fn is_name_start(byte: u8) -> bool {
     byte.is_ascii_alphabetic() || byte == b'_'
 }
 
-fn is_name_continue(byte: u8) -> bool {
-    is_name_start(byte) || byte.is_ascii_digit()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::parser::control::{Control, ParseError};
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    #[test]
-    fn cancelled_long_body_scanner_does_not_advance() {
-        let cancellation = Arc::new(AtomicBool::new(false));
-
-        let execution = Execution::new(&Control {
-            cancellation: Some(cancellation.clone()),
-            ..Control::default()
-        });
-
-        let mut lexer = Lexer::controlled(
-            b"[[long body]]",
-            2,
-            &State::default(),
-            Some(execution.clone()),
-        );
-
-        cancellation.store(true, Ordering::Relaxed);
-
-        assert_eq!(
-            lexer.long_body(0, TokenKind::RawString, LexError::BrokenString),
-            TokenKind::Error(LexError::BrokenString)
-        );
-
-        assert_eq!(lexer.cursor, 2);
-        assert_eq!(execution.error(), Some(ParseError::Cancelled));
-        assert!(lexer.next().is_none());
-    }
-
-    #[test]
-    fn persistent_braces_drop_deep_unique_and_shared_tails_without_recursion() {
-        std::thread::Builder::new()
-            .stack_size(64 * 1024)
-            .spawn(|| {
-                let mut braces = Braces::default();
-
-                for _ in 0..100_000 {
-                    braces.push(Brace::Normal);
-                }
-
-                let snapshot = braces.clone();
-
-                for _ in 0..50_000 {
-                    assert_eq!(braces.pop(), Some(Brace::Normal));
-                }
-
-                assert_eq!(braces.len(), 50_000);
-                assert_eq!(snapshot.len(), 100_000);
-                drop(snapshot);
-                drop(braces);
-            })
-            .unwrap()
-            .join()
-            .unwrap();
-    }
-
-    #[test]
-    fn equivalent_checkpoints_cache_verified_tails_without_accepting_partial_matches() {
-        let mut left = Braces::default();
-        let mut right = Braces::default();
-        let mut prefixes = Vec::new();
-
-        for index in 0..10_000 {
-            let brace = if index % 2 == 0 {
-                Brace::Normal
-            } else {
-                Brace::Interpolated
-            };
-
-            left.push(brace);
-            right.push(brace);
-            prefixes.push((left.clone(), right.clone()));
-        }
-
-        assert_eq!(left, right);
-        let mut pairs = HashSet::new();
-        assert!(left.equivalent(&right, &mut pairs));
-        assert!(!pairs.is_empty());
-        assert!(pairs.len() <= prefixes.len());
-
-        for (left, right) in &prefixes {
-            assert!(left.equivalent(right, &mut pairs));
-        }
-
-        assert!(pairs.len() <= prefixes.len());
-
-        let old = Checkpoint {
-            cursor: 7,
-            state: State { braces: left },
-            finished: false,
-        };
-
-        let mut new = Checkpoint {
-            cursor: 8,
-            state: State { braces: right },
-            finished: false,
-        };
-
-        assert!(!old.equivalent(&new, &mut pairs));
-        new.cursor = 7;
-        new.finished = true;
-        assert!(!old.equivalent(&new, &mut pairs));
-        new.finished = false;
-        assert!(old.equivalent(&new, &mut pairs));
-
-        let left = Braces::from([Brace::Interpolated, Brace::Normal, Brace::Normal]);
-        let right = Braces::from([Brace::Normal, Brace::Normal, Brace::Normal]);
-        let mut pairs = HashSet::new();
-        assert!(!left.equivalent(&right, &mut pairs));
-        assert!(pairs.is_empty());
-        assert!(!left.equivalent(&right, &mut pairs));
-        assert!(pairs.is_empty());
-    }
+fn is_space(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\r' | b'\n' | 0x0b | 0x0c)
 }

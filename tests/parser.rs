@@ -1,56 +1,9 @@
-use vermis::{Kind, Tree, parse};
+//! Parser grammar tests.
 
-fn check(source: &[u8]) -> Tree {
-    let tree = parse(source);
+pub mod support;
 
-    let restored: Vec<_> = tree
-        .tokens()
-        .flat_map(|token| token.text().iter().copied())
-        .collect();
-
-    assert_eq!(restored, source);
-    assert_eq!(tree.source(), source);
-    assert_eq!(tree.root().text(), source);
-    assert_eq!(tree.root().parent(), None);
-
-    for node in tree.root().descendants() {
-        let span = node.span();
-        assert!(span.start <= span.end && span.end <= source.len());
-        assert_eq!(node.text(), span.bytes(tree.source()));
-
-        if node != tree.root() {
-            let parent = node.parent().unwrap();
-            assert_eq!(parent.children().filter(|child| *child == node).count(), 1);
-        }
-
-        let mut end = span.start;
-
-        for child in node.children() {
-            let child_span = child.span();
-            assert!(child_span.start >= end && child_span.end <= span.end);
-            assert_eq!(child.parent(), Some(node));
-            end = child_span.end;
-        }
-    }
-
-    for error in tree.diagnostics() {
-        assert!(error.span.start <= error.span.end && error.span.end <= source.len());
-    }
-
-    tree
-}
-
-fn accepted(source: &str) -> Tree {
-    let tree = check(source.as_bytes());
-
-    assert!(
-        tree.diagnostics().is_empty(),
-        "{source:?}: {:?}",
-        tree.diagnostics()
-    );
-
-    tree
-}
+use support::{accepted, check, first};
+use vermis::tree::NodeKind;
 
 #[test]
 fn precedence_and_associativity() {
@@ -62,28 +15,35 @@ fn precedence_and_associativity() {
         ("return a or b and c", "or", "a", "b and c"),
     ] {
         let tree = accepted(source);
+        let binary = first(&tree, |kind| matches!(kind, NodeKind::Binary { .. }));
 
-        let binary = tree
-            .root()
-            .descendants()
-            .find(|node| node.kind() == Kind::Binary)
-            .unwrap();
+        let NodeKind::Binary {
+            left: actual_left,
+            operator: actual_operator,
+            right: actual_right,
+        } = tree.node(binary).kind
+        else {
+            panic!()
+        };
 
-        let mut children = binary.children();
-        assert_eq!(children.next().unwrap().text(), left.as_bytes());
-        assert_eq!(children.next().unwrap().text(), operator.as_bytes());
-        assert_eq!(children.next().unwrap().text(), right.as_bytes());
+        assert_eq!(tree.text(actual_left), left.as_bytes());
+
+        assert_eq!(
+            tree.token(actual_operator).bytes(tree.source),
+            operator.as_bytes()
+        );
+
+        assert_eq!(tree.text(actual_right), right.as_bytes());
     }
 
     let tree = accepted("return -a ^ 2");
+    let unary = first(&tree, |kind| matches!(kind, NodeKind::Unary { .. }));
 
-    let unary = tree
-        .root()
-        .descendants()
-        .find(|node| node.kind() == Kind::Unary)
-        .unwrap();
+    let NodeKind::Unary { operand, .. } = tree.node(unary).kind else {
+        panic!()
+    };
 
-    assert_eq!(unary.children().nth(1).unwrap().kind(), Kind::Binary);
+    assert!(matches!(tree.node(operand).kind, NodeKind::Binary { .. }));
 }
 
 #[test]
@@ -95,29 +55,37 @@ fn condition_bindings() {
         let tree = accepted(source);
 
         let bindings: Vec<_> = tree
-            .root()
-            .descendants()
-            .filter(|node| matches!(node.kind(), Kind::Local | Kind::Constant))
-            .map(|node| {
-                let mut children = node.children();
+            .nodes
+            .iter()
+            .filter_map(|node| {
+                let (constant, bindings, values) = match &node.kind {
+                    NodeKind::Local {
+                        bindings, values, ..
+                    } => (false, bindings, values),
 
-                (
-                    node.kind(),
-                    children.next().unwrap().text(),
-                    children.next().unwrap().text(),
-                )
+                    NodeKind::Constant {
+                        bindings, values, ..
+                    } => (true, bindings, values),
+
+                    _ => return None,
+                };
+
+                assert_eq!(tree.list(bindings).len(), 1);
+                assert_eq!(tree.list(values).len(), 1);
+
+                Some((
+                    constant,
+                    tree.text(tree.list(bindings)[0].node),
+                    tree.text(tree.list(values)[0].node),
+                ))
             })
             .collect();
 
         assert_eq!(
             bindings,
             [
-                (
-                    Kind::Local,
-                    b"first: number".as_slice(),
-                    b"value".as_slice()
-                ),
-                (Kind::Constant, b"second".as_slice(), b"other".as_slice()),
+                (false, b"first: number".as_slice(), b"value".as_slice()),
+                (true, b"second".as_slice(), b"other".as_slice())
             ]
         );
     }
@@ -129,9 +97,9 @@ fn condition_bindings() {
         let tree = accepted(source);
 
         assert!(
-            tree.root()
-                .descendants()
-                .all(|node| node.kind() != Kind::Constant)
+            tree.nodes
+                .iter()
+                .all(|node| !matches!(node.kind, NodeKind::Constant { .. }))
         );
     }
 }
@@ -188,31 +156,76 @@ fn attributed_declarations() {
         "@[native 'message']",
         "@[native [[message]]]",
     ] {
-        for (keyword, kind) in [("export", Kind::Export), ("const", Kind::LocalFunction)] {
+        for keyword in ["export", "const"] {
             let source = format!(
                 "{attributes} {keyword} function identity<T>(value: T): T return value end"
             );
 
             let tree = accepted(&source);
-            let block = tree.root().children().next().unwrap();
-            let declaration = block.children().next().unwrap();
+            let function = first(&tree, |kind| matches!(kind, NodeKind::Function { .. }));
 
-            assert_eq!(declaration.kind(), kind);
-            assert_eq!(declaration.text(), source.as_bytes());
-
-            let attributes_node = declaration.children().next().unwrap();
-            assert_eq!(attributes_node.kind(), Kind::Attributes);
-            assert_eq!(attributes_node.text(), attributes.as_bytes());
-
-            let function = if kind == Kind::Export {
-                declaration.children().nth(1).unwrap()
-            } else {
-                declaration
+            let NodeKind::Function {
+                attributes: function_attributes,
+                prefix,
+                generics,
+                parameters,
+                returns,
+                body,
+                ..
+            } = tree.node(function).kind
+            else {
+                panic!()
             };
 
-            for kind in [Kind::Generics, Kind::Parameters, Kind::Returns, Kind::Block] {
-                assert!(function.children().any(|child| child.kind() == kind));
-            }
+            let attributes_node = if keyword == "export" {
+                let export = first(&tree, |kind| matches!(kind, NodeKind::Export { .. }));
+
+                let NodeKind::Export {
+                    attributes,
+                    declaration,
+                    ..
+                } = tree.node(export).kind
+                else {
+                    panic!()
+                };
+
+                assert_eq!(tree.text(export), source.as_bytes());
+                assert_eq!(declaration, function);
+
+                attributes.unwrap()
+            } else {
+                assert_eq!(tree.text(function), source.as_bytes());
+                assert_eq!(tree.token(prefix.unwrap()).bytes(tree.source), b"const");
+
+                function_attributes.unwrap()
+            };
+
+            assert!(matches!(
+                tree.node(attributes_node).kind,
+                NodeKind::Attributes { .. }
+            ));
+
+            assert_eq!(tree.text(attributes_node), attributes.as_bytes());
+
+            assert!(matches!(
+                tree.node(generics.unwrap()).kind,
+                NodeKind::Generics { .. }
+            ));
+
+            assert!(matches!(
+                tree.node(parameters).kind,
+                NodeKind::Parameters { .. }
+            ));
+
+            assert!(matches!(
+                tree.node(returns.unwrap()).kind,
+                NodeKind::Returns { .. }
+            ));
+
+            assert!(matches!(
+                tree.node(body.unwrap()).kind,
+                NodeKind::Block { .. }
+            ));
         }
     }
 
@@ -231,7 +244,7 @@ fn attributed_declarations() {
         "@native const function module.identity() end",
     ] {
         assert!(
-            !check(source.as_bytes()).diagnostics().is_empty(),
+            !check(source.as_bytes()).diagnostics.is_empty(),
             "accepted {source:?}"
         );
     }
@@ -239,26 +252,28 @@ fn attributed_declarations() {
 
 #[test]
 fn classes_are_structured() {
-    for (reference, kind) in [
-        ("Parent", Kind::Name),
-        ("classes.Parent", Kind::Field),
-        ("classes['Parent']", Kind::Index),
-        ("classes[select(name)]", Kind::Index),
+    for reference in [
+        "Parent",
+        "classes.Parent",
+        "classes['Parent']",
+        "classes[select(name)]",
     ] {
         for prefix in ["class", "open class", "export class", "export open class"] {
             let source = format!("{prefix} Child extends {reference} end");
             let tree = accepted(&source);
+            let extends = first(&tree, |kind| matches!(kind, NodeKind::Extends { .. }));
 
-            let extends = tree
-                .root()
-                .descendants()
-                .find(|node| node.kind() == Kind::Extends)
-                .unwrap();
+            let NodeKind::Extends { superclass, .. } = tree.node(extends).kind else {
+                panic!()
+            };
 
-            let superclass = extends.children().next().unwrap();
+            assert!(match reference {
+                "Parent" => matches!(tree.node(superclass).kind, NodeKind::Name { .. }),
+                "classes.Parent" => matches!(tree.node(superclass).kind, NodeKind::Field { .. }),
+                _ => matches!(tree.node(superclass).kind, NodeKind::Index { .. }),
+            });
 
-            assert_eq!(superclass.kind(), kind);
-            assert_eq!(superclass.text(), reference.as_bytes());
+            assert_eq!(tree.text(superclass), reference.as_bytes());
         }
     }
 
@@ -268,18 +283,24 @@ fn classes_are_structured() {
         );
 
         let tree = accepted(&source);
+        let method = first(&tree, |kind| matches!(kind, NodeKind::Function { .. }));
 
-        let method = tree
-            .root()
-            .descendants()
-            .find(|node| node.kind() == Kind::Method)
-            .unwrap();
+        let NodeKind::Function {
+            attributes: Some(attributes_node),
+            name: Some(name),
+            ..
+        } = tree.node(method).kind
+        else {
+            panic!()
+        };
 
-        let mut children = method.children();
-        let attributes_node = children.next().unwrap();
-        assert_eq!(attributes_node.kind(), Kind::Attributes);
-        assert_eq!(attributes_node.text(), attributes.as_bytes());
-        assert_eq!(children.next().unwrap().text(), b"get");
+        assert!(matches!(
+            tree.node(attributes_node).kind,
+            NodeKind::Attributes { .. }
+        ));
+
+        assert_eq!(tree.text(attributes_node), attributes.as_bytes());
+        assert_eq!(tree.text(name), b"get");
     }
 
     accepted("declare extern type Box with public: number read: string write: boolean end");
@@ -291,7 +312,7 @@ fn classes_are_structured() {
         "declare extern type Box with @checked end",
     ] {
         assert!(
-            !check(source.as_bytes()).diagnostics().is_empty(),
+            !check(source.as_bytes()).diagnostics.is_empty(),
             "accepted {source:?}"
         );
     }
@@ -302,24 +323,21 @@ fn access_types_are_structured() {
     for access in ["read", "write"] {
         let source = format!("type Array = {{{access} number}}");
         let tree = accepted(&source);
+        let table = first(&tree, |kind| matches!(kind, NodeKind::TypeTable { .. }));
 
-        let table = tree
-            .root()
-            .descendants()
-            .find(|node| node.kind() == Kind::TypeTable)
-            .unwrap();
+        let NodeKind::TypeTable {
+            access: Some(operator),
+            element: Some(element),
+            ..
+        } = tree.node(table).kind
+        else {
+            panic!()
+        };
 
-        let mut children = table.children();
-        let operator = children.next().unwrap();
-        assert_eq!(operator.kind(), Kind::Operator);
-        assert_eq!(operator.text(), access.as_bytes());
-        assert_eq!(children.next().unwrap().text(), b"number");
+        assert_eq!(tree.token(operator).bytes(tree.source), access.as_bytes());
+        assert_eq!(tree.text(element), b"number");
 
-        for (field, kind) in [
-            ("value: number", Kind::TypeField),
-            ("['value']: number", Kind::TypeField),
-            ("[string]: number", Kind::TypeIndexer),
-        ] {
+        for field in ["value: number", "['value']: number", "[string]: number"] {
             let mut sources = vec![format!("type Object = {{{access} {field}}}")];
 
             if field == "value: number" {
@@ -331,15 +349,27 @@ fn access_types_are_structured() {
             for source in sources {
                 let tree = accepted(&source);
 
-                let field = tree
-                    .root()
-                    .descendants()
-                    .find(|node| node.kind() == kind)
-                    .unwrap();
+                let field_node = first(&tree, |kind| {
+                    if field == "[string]: number" {
+                        matches!(kind, NodeKind::TypeIndexer { .. })
+                    } else {
+                        matches!(kind, NodeKind::TypeField { .. })
+                    }
+                });
 
-                let operator = field.children().next().unwrap();
-                assert_eq!(operator.kind(), Kind::Operator);
-                assert_eq!(operator.text(), access.as_bytes());
+                let (NodeKind::TypeField {
+                    access: Some(operator),
+                    ..
+                }
+                | NodeKind::TypeIndexer {
+                    access: Some(operator),
+                    ..
+                }) = tree.node(field_node).kind
+                else {
+                    panic!()
+                };
+
+                assert_eq!(tree.token(operator).bytes(tree.source), access.as_bytes());
             }
         }
     }
@@ -384,7 +414,7 @@ fn enabled_syntax() {
 
     for source in ["return 0b0b1", "return 0b0B1i"] {
         assert!(
-            !check(source.as_bytes()).diagnostics().is_empty(),
+            !check(source.as_bytes()).diagnostics.is_empty(),
             "accepted {source:?}"
         );
     }
@@ -401,15 +431,14 @@ fn empty_type_arguments() {
         "object:identity<<>>()",
     ] {
         let tree = accepted(source);
+        let arguments_node = first(&tree, |kind| matches!(kind, NodeKind::TypeArguments { .. }));
 
-        let arguments = tree
-            .root()
-            .descendants()
-            .find(|node| node.kind() == Kind::TypeArguments)
-            .unwrap();
+        let NodeKind::TypeArguments { arguments, .. } = &tree.node(arguments_node).kind else {
+            panic!()
+        };
 
-        assert_eq!(arguments.children().len(), 0);
-        assert_eq!(arguments.text(), b"<>");
+        assert_eq!(tree.list(arguments), []);
+        assert_eq!(tree.text(arguments_node), b"<>");
     }
 }
 
@@ -420,19 +449,21 @@ fn exported_functions_are_structured() {
         "@native export function identity<T>(value: T): T return value end",
     ] {
         let tree = accepted(source);
+        let export = first(&tree, |kind| matches!(kind, NodeKind::Export { .. }));
 
-        let export = tree
-            .root()
-            .descendants()
-            .find(|node| node.kind() == Kind::Export)
-            .unwrap();
+        let NodeKind::Export { declaration, .. } = tree.node(export).kind else {
+            panic!()
+        };
 
-        let function = export.children().next_back().unwrap();
+        let NodeKind::Function {
+            name: Some(name), ..
+        } = tree.node(declaration).kind
+        else {
+            panic!()
+        };
 
-        assert_eq!(function.kind(), Kind::Function);
-        let name = function.children().next().unwrap();
-        assert_eq!(name.kind(), Kind::Name);
-        assert_eq!(name.text(), b"identity");
+        assert!(matches!(tree.node(name).kind, NodeKind::Name { .. }));
+        assert_eq!(tree.text(name), b"identity");
     }
 }
 
@@ -459,7 +490,7 @@ fn declaration_type_context() {
         "declare library: Box<@checked () -> ()>",
     ] {
         assert!(
-            !check(source.as_bytes()).diagnostics().is_empty(),
+            !check(source.as_bytes()).diagnostics.is_empty(),
             "accepted {source:?}"
         );
     }
@@ -468,31 +499,24 @@ fn declaration_type_context() {
 #[test]
 fn types_are_structured() {
     let tree = accepted("type Value<T> = {read value: T?, callback: (T) -> (T, string)}");
-
-    for kind in [
-        Kind::TypeAlias,
-        Kind::Generics,
-        Kind::TypeTable,
-        Kind::TypeField,
-        Kind::TypeOptional,
-        Kind::TypeFunctionExpression,
-        Kind::TypePack,
-    ] {
-        assert!(
-            tree.root().descendants().any(|node| node.kind() == kind),
-            "missing {kind:?}"
-        );
-    }
-
+    first(&tree, |kind| matches!(kind, NodeKind::TypeAlias { .. }));
+    first(&tree, |kind| matches!(kind, NodeKind::Generics { .. }));
+    first(&tree, |kind| matches!(kind, NodeKind::TypeTable { .. }));
+    first(&tree, |kind| matches!(kind, NodeKind::TypeField { .. }));
+    first(&tree, |kind| matches!(kind, NodeKind::TypeOptional { .. }));
+    first(&tree, |kind| matches!(kind, NodeKind::TypeFunction { .. }));
+    first(&tree, |kind| matches!(kind, NodeKind::TypePack { .. }));
     let tree = accepted("local value = callback<<number>>(input)");
+    let call = first(&tree, |kind| matches!(kind, NodeKind::Call { .. }));
 
-    let call = tree
-        .root()
-        .descendants()
-        .find(|node| node.kind() == Kind::Call)
-        .unwrap();
+    let NodeKind::Call { callee, .. } = tree.node(call).kind else {
+        panic!()
+    };
 
-    assert_eq!(call.children().next().unwrap().kind(), Kind::Instantiate);
+    assert!(matches!(
+        tree.node(callee).kind,
+        NodeKind::Instantiate { .. }
+    ));
 }
 
 #[test]
@@ -535,7 +559,7 @@ fn numeric_literals() {
         let source = format!("return {literal}");
 
         assert!(
-            !check(source.as_bytes()).diagnostics().is_empty(),
+            !check(source.as_bytes()).diagnostics.is_empty(),
             "accepted {literal}"
         );
     }
@@ -583,7 +607,7 @@ fn malformed_syntax() {
         "return 1 local value = 2",
     ] {
         let tree = check(source.as_bytes());
-        assert!(!tree.diagnostics().is_empty(), "accepted {source:?}");
+        assert!(!tree.diagnostics.is_empty(), "accepted {source:?}");
     }
 }
 
@@ -597,7 +621,7 @@ fn nesting_boundary() {
     let tree = check(source.as_bytes());
 
     assert!(
-        tree.diagnostics()
+        tree.diagnostics
             .iter()
             .any(|diagnostic| diagnostic.message == "syntax nesting limit exceeded")
     );
@@ -606,19 +630,16 @@ fn nesting_boundary() {
 #[test]
 fn recovery_and_bytes() {
     let tree = check(b"local broken = )\nlocal valid = '\xff' -- comment\nreturn valid");
-    assert_ne!(tree.diagnostics(), []);
+    assert_ne!(tree.diagnostics, []);
 
     assert!(
-        tree.root()
-            .descendants()
-            .any(|node| node.kind() == Kind::Local && node.text() == b"local valid = '\xff'")
+        tree.nodes
+            .iter()
+            .any(|node| matches!(node.kind, NodeKind::Local { .. })
+                && node.span.bytes(tree.source) == b"local valid = '\xff'")
     );
 
-    assert!(
-        tree.root()
-            .descendants()
-            .any(|node| node.kind() == Kind::Return)
-    );
+    first(&tree, |kind| matches!(kind, NodeKind::Return { .. }));
 
     for first in u8::MIN..=u8::MAX {
         for second in u8::MIN..=u8::MAX {
@@ -637,7 +658,7 @@ fn recovery_and_bytes() {
     }
 
     let deep = format!("return {}value{}", "(".repeat(1000), ")".repeat(1000));
-    assert_ne!(check(deep.as_bytes()).diagnostics(), []);
+    assert_ne!(check(deep.as_bytes()).diagnostics, []);
 
     for source in [
         format!("{}{}", "do ".repeat(1001), "end ".repeat(1001)),
@@ -653,7 +674,7 @@ fn recovery_and_bytes() {
             " end".repeat(1000)
         ),
     ] {
-        assert_ne!(check(source.as_bytes()).diagnostics(), []);
+        assert_ne!(check(source.as_bytes()).diagnostics, []);
     }
 
     accepted(&format!("return value{}", ".field".repeat(1000)));

@@ -1,26 +1,15 @@
-mod analysis;
-mod diagnostics;
-mod document;
-mod lexer;
-mod navigation;
-mod parser;
-mod sequence;
-mod source;
-mod syntax;
-mod tree;
-mod update;
-mod view;
+//! Lossless Luau parsing with indexed syntax and diagnostics.
 
-pub use analysis::{AnalysisError, Identity, Memo};
-pub use diagnostics::{DiagnosticCode, Severity};
-pub use document::{Document, DocumentError, Revision, Snapshot};
-pub use lexer::Lexer;
-pub use navigation::{Descendants, Element, Elements, TokenView, Tokens};
-pub use parser::context::{Expectation, Expected};
-pub use parser::control::{Control, Limits, ParseError, Resource};
+/// Byte-oriented tokenization.
+pub mod lexer;
+
+/// Parsing and syntax construction.
+pub mod parser;
+
+/// Tokens and source ranges.
+pub mod token;
+
+/// Indexed syntax storage.
+pub mod tree;
+
 pub use parser::parse;
-pub use source::{CoordinateError, Position};
-pub use syntax::{InterpolatedKind, Keyword, LexError, Operator, Span, Token, TokenKind};
-pub use tree::{Diagnostic, Kind, Tree};
-pub use update::{Edit, EditError};
-pub use view::{Children, Parts, View};

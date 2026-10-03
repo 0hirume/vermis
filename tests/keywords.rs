@@ -1,4 +1,9 @@
-use vermis::{Keyword, Lexer, TokenKind};
+//! Keyword classification tests.
+
+use vermis::{
+    lexer::Lexer,
+    token::{Keyword, TokenKind},
+};
 
 fn first(source: &[u8]) -> TokenKind {
     Lexer::new(source).collect::<Vec<_>>()[0].kind

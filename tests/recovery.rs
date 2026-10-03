@@ -1,197 +1,135 @@
-use vermis::{Expected, Kind, Parts, Span, TokenKind, Tree, View, parse};
+//! Parser recovery tests.
 
-fn check(source: &[u8]) -> Tree {
-    let tree = parse(source);
+pub mod support;
 
-    let mut restored = Vec::new();
-    let mut end = 0;
-
-    for token in tree.tokens() {
-        assert_eq!(token.span().start, end);
-        end = token.span().end;
-        restored.extend_from_slice(token.text());
-    }
-
-    assert_eq!(restored, source);
-    assert_eq!(end, source.len());
-
-    for node in tree.root().descendants() {
-        let span = node.span();
-        assert!(span.start <= span.end && span.end <= source.len());
-        assert!(node.parts().is_some(), "{source:?}: {node:?}");
-
-        if node.kind() == Kind::Missing {
-            assert_eq!(span.start, span.end);
-        }
-
-        let mut end = span.start;
-
-        for child in node.children() {
-            assert!(child.span().start >= end && child.span().end <= span.end);
-            end = child.span().end;
-        }
-    }
-
-    tree
-}
-
-fn first(tree: &Tree, kind: Kind) -> View<'_> {
-    tree.root()
-        .descendants()
-        .find(|node| node.kind() == kind)
-        .unwrap()
-}
+use support::{check, first};
+use vermis::tree::NodeKind;
 
 #[test]
 fn incomplete_structure_stays_typed_and_lossless() {
     let tree = check(b"local value =");
-    assert_ne!(tree.diagnostics(), []);
+    assert_ne!(tree.diagnostics, []);
+    let local = first(&tree, |kind| matches!(kind, NodeKind::Local { .. }));
 
-    let Parts::Local {
-        mut bindings,
-        mut values,
-    } = first(&tree, Kind::Local).parts().unwrap()
+    let NodeKind::Local {
+        bindings, values, ..
+    } = &tree.node(local).kind
     else {
-        panic!("missing local view");
+        panic!()
     };
 
-    let Parts::Binding { name, annotation } = bindings.next().unwrap().parts().unwrap() else {
-        panic!("missing binding view");
+    assert_eq!(tree.list(bindings).len(), 1);
+
+    let NodeKind::Binding {
+        name, annotation, ..
+    } = tree.node(tree.list(bindings)[0].node).kind
+    else {
+        panic!()
     };
 
-    assert_eq!(name.text(), b"value");
+    assert_eq!(tree.text(name), b"value");
     assert!(annotation.is_none());
-    assert!(bindings.next().is_none());
-    let initializer = values.next().unwrap();
-    assert_eq!(initializer.kind(), Kind::Missing);
-    assert_eq!(initializer.span().start, b"local value =".len());
-    assert!(values.next().is_none());
+    assert_eq!(tree.list(values).len(), 1);
+    let initializer = tree.node(tree.list(values)[0].node);
+    assert!(matches!(initializer.kind, NodeKind::Missing { .. }));
+    assert_eq!(initializer.span.start, b"local value =".len());
 }
 
 #[test]
 fn declarations() {
-    for (source, kinds) in [
-        (
-            "local first, second =",
-            &[Kind::Local, Kind::Binding, Kind::Missing][..],
-        ),
-        (
-            "local function",
-            &[Kind::LocalFunction, Kind::Parameters, Kind::Missing][..],
-        ),
-        (
-            "function module.",
-            &[Kind::Function, Kind::FunctionName, Kind::Missing][..],
-        ),
-        (
-            "function f(first, second:",
-            &[Kind::Function, Kind::Binding, Kind::Missing][..],
-        ),
-        (
-            "declare function f(first: number,",
-            &[Kind::Declaration, Kind::Parameters, Kind::Missing][..],
-        ),
-        ("declare value:", &[Kind::Declaration, Kind::Missing][..]),
-        (
-            "declare extern type Box with value:",
-            &[
-                Kind::Declaration,
-                Kind::Class,
-                Kind::TypeField,
-                Kind::Missing,
-            ][..],
-        ),
-        ("type Value =", &[Kind::TypeAlias, Kind::Missing][..]),
-        (
-            "type Value<T,",
-            &[
-                Kind::TypeAlias,
-                Kind::Generics,
-                Kind::Generic,
-                Kind::Missing,
-            ][..],
-        ),
-        (
-            "type Value = {first: number, second:",
-            &[
-                Kind::TypeAlias,
-                Kind::TypeTable,
-                Kind::TypeField,
-                Kind::Missing,
-            ][..],
-        ),
-        (
-            "type Value = (value: number) ->",
-            &[Kind::TypeFunctionExpression, Kind::Missing][..],
-        ),
-        (
-            "type Value = namespace.",
-            &[Kind::TypeName, Kind::Missing][..],
-        ),
-        (
-            "return f(first,",
-            &[Kind::Call, Kind::Arguments, Kind::Missing][..],
-        ),
-        (
-            "return receiver:method",
-            &[Kind::MethodCall, Kind::Missing][..],
-        ),
-        ("return first +", &[Kind::Binary, Kind::Missing][..]),
-        (
-            "return `before {first +",
-            &[Kind::Interpolation, Kind::Binary, Kind::Missing][..],
-        ),
-        (
-            "@[deprecated(",
-            &[
-                Kind::Attributes,
-                Kind::Attribute,
-                Kind::Arguments,
-                Kind::Function,
-                Kind::Missing,
-            ][..],
-        ),
-        (
-            "declare callback: @checked",
-            &[
-                Kind::Declaration,
-                Kind::Attributes,
-                Kind::TypeFunctionExpression,
-                Kind::Missing,
-            ][..],
-        ),
-    ] {
-        let tree = check(source.as_bytes());
-        assert!(!tree.diagnostics().is_empty(), "{source}");
-
-        for kind in kinds {
-            first(&tree, *kind);
-        }
+    macro_rules! rejected {
+        ($source:literal, $($variant:ident),+) => {{
+            let tree = check($source.as_bytes());
+            assert!(!tree.diagnostics.is_empty(), "{}", $source);
+            $(assert!(
+                tree.nodes.iter().any(|node| matches!(node.kind, NodeKind::$variant { .. })),
+                "{}: missing {}", $source, stringify!($variant)
+            );)+
+        }};
     }
+
+    rejected!("local first, second =", Local, Binding, Missing);
+    rejected!("local function", Function, Parameters, Missing);
+    rejected!("function module.", Function, FunctionName, Missing);
+    rejected!("function f(first, second:", Function, Binding, Missing);
+
+    rejected!(
+        "declare function f(first: number,",
+        Function,
+        Parameters,
+        Missing
+    );
+
+    rejected!("declare value:", Declaration, Missing);
+
+    rejected!(
+        "declare extern type Box with value:",
+        Declaration,
+        Class,
+        TypeField,
+        Missing
+    );
+
+    rejected!("type Value =", TypeAlias, Missing);
+    rejected!("type Value<T,", TypeAlias, Generics, Generic, Missing);
+
+    rejected!(
+        "type Value = {first: number, second:",
+        TypeAlias,
+        TypeTable,
+        TypeField,
+        Missing
+    );
+
+    rejected!("type Value = (value: number) ->", TypeFunction, Missing);
+    rejected!("type Value = namespace.", TypeName, Missing);
+    rejected!("return f(first,", Call, Arguments, Missing);
+    rejected!("return receiver:method", MethodCall, Missing);
+    rejected!("return first +", Binary, Missing);
+    rejected!("return `before {first +", Interpolation, Binary, Missing);
+
+    rejected!(
+        "@[deprecated(",
+        Attributes,
+        Attribute,
+        Arguments,
+        Function,
+        Missing
+    );
+
+    rejected!(
+        "declare callback: @checked",
+        Declaration,
+        Attributes,
+        TypeFunction,
+        Missing
+    );
 }
 
 #[test]
 fn expressions() {
     let tree = check(b"return f(first, second +");
-    assert_ne!(tree.diagnostics(), []);
+    assert_ne!(tree.diagnostics, []);
+    let call = first(&tree, |kind| matches!(kind, NodeKind::Call { .. }));
 
-    let Parts::Call { arguments, .. } = first(&tree, Kind::Call).parts().unwrap() else {
+    let NodeKind::Call { arguments, .. } = tree.node(call).kind else {
         panic!()
     };
 
-    let Parts::Arguments { mut values } = arguments.parts().unwrap() else {
+    let NodeKind::Arguments { values, .. } = &tree.node(arguments).kind else {
         panic!()
     };
 
-    assert_eq!(values.next().unwrap().text(), b"first");
+    let values = tree.list(values);
+    assert_eq!(values.len(), 2);
+    assert_eq!(tree.text(values[0].node), b"first");
 
-    let Parts::Binary { left, right, .. } = values.next().unwrap().parts().unwrap() else {
+    let NodeKind::Binary { left, right, .. } = tree.node(values[1].node).kind else {
         panic!()
     };
 
-    assert_eq!(left.text(), b"second");
-    assert_eq!(right.kind(), Kind::Missing);
-    assert!(values.next().is_none());
+    assert_eq!(tree.text(left), b"second");
+    assert!(matches!(tree.node(right).kind, NodeKind::Missing { .. }));
 }
 
 #[test]
@@ -202,10 +140,7 @@ fn boundaries() {
         "type Value<T> = {first: T, callback: (T) -> T}",
         "return {Name = 'name', value, {child}}",
     ] {
-        assert!(
-            check(source.as_bytes()).diagnostics().is_empty(),
-            "{source}"
-        );
+        assert!(check(source.as_bytes()).diagnostics.is_empty(), "{source}");
 
         for end in 0..source.len() {
             check(&source.as_bytes()[..end]);
@@ -219,112 +154,73 @@ fn boundaries() {
     }
 
     let deep = format!("return {}value{}", "(".repeat(1000), ")".repeat(1000));
-    assert_ne!(check(deep.as_bytes()).diagnostics(), []);
-}
-
-#[test]
-fn updated_block_end_context_matches_full_parse() {
-    for ending in ["return 1", "break", "continue"] {
-        for statement in ["local value = 2", "do local value = 2 end"] {
-            let source = format!("{ending}\n{statement}");
-            let start = source.find('2').unwrap();
-            let tree = parse(source.as_bytes());
-
-            let updated = tree
-                .update(
-                    Span {
-                        start,
-                        end: start + 1,
-                    },
-                    b"",
-                )
-                .unwrap();
-
-            let edited = source.replacen('2', "", 1);
-            let reparsed = check(edited.as_bytes());
-            assert_eq!(updated.diagnostics(), reparsed.diagnostics(), "{source}");
-
-            assert_eq!(
-                updated
-                    .root()
-                    .descendants()
-                    .map(View::kind)
-                    .collect::<Vec<_>>(),
-                reparsed
-                    .root()
-                    .descendants()
-                    .map(View::kind)
-                    .collect::<Vec<_>>(),
-                "{source}"
-            );
-        }
-    }
-
-    let source = b"local first =\nlocal second = 2\nreturn second";
-    let start = source.iter().position(|byte| *byte == b'2').unwrap();
-
-    let updated = parse(source)
-        .update(
-            Span {
-                start,
-                end: start + 1,
-            },
-            b"3",
-        )
-        .unwrap();
-
-    let reparsed = check(b"local first =\nlocal second = 3\nreturn second");
-    assert_eq!(updated.diagnostics(), reparsed.diagnostics());
+    assert_ne!(check(deep.as_bytes()).diagnostics, []);
 }
 
 #[test]
 fn recovery_loops_make_progress() {
     for source in [b"f'\\256'".as_slice(), b"f'\\xgg'".as_slice()] {
         let tree = check(source);
-        assert_ne!(tree.diagnostics(), []);
+        assert_ne!(tree.diagnostics, []);
+        let call = first(&tree, |kind| matches!(kind, NodeKind::Call { .. }));
 
-        let Parts::Call { arguments, .. } = first(&tree, Kind::Call).parts().unwrap() else {
-            panic!("missing call view");
+        let NodeKind::Call { arguments, .. } = tree.node(call).kind else {
+            panic!()
         };
 
-        let Parts::Arguments { mut values } = arguments.parts().unwrap() else {
-            panic!("missing arguments view");
+        let NodeKind::Arguments { values, .. } = &tree.node(arguments).kind else {
+            panic!()
         };
 
-        let value = values.next().unwrap();
-        assert_eq!(value.kind(), Kind::String);
-        assert_eq!(value.text(), &source[1..]);
-        assert!(values.next().is_none());
+        assert_eq!(tree.list(values).len(), 1);
+        let value = tree.list(values)[0].node;
+        assert!(matches!(tree.node(value).kind, NodeKind::String { .. }));
+        assert_eq!(tree.text(value), &source[1..]);
     }
 
     let tree = check(b"local value = 0x\nlocal next = 1");
-    assert_ne!(tree.diagnostics(), []);
+    assert_ne!(tree.diagnostics, []);
+    let local = first(&tree, |kind| matches!(kind, NodeKind::Local { .. }));
 
-    let Parts::Local { mut values, .. } = first(&tree, Kind::Local).parts().unwrap() else {
-        panic!("missing local view");
+    let NodeKind::Local { values, .. } = &tree.node(local).kind else {
+        panic!()
     };
 
-    assert_eq!(values.next().unwrap().kind(), Kind::Number);
-    assert_eq!(tree.root().children().next().unwrap().children().count(), 2);
+    assert!(matches!(
+        tree.node(tree.list(values)[0].node).kind,
+        NodeKind::Number { .. }
+    ));
 
+    let NodeKind::Root { block, .. } = tree.node(tree.root).kind else {
+        panic!()
+    };
+
+    let NodeKind::Block { statements } = &tree.node(block).kind else {
+        panic!()
+    };
+
+    assert_eq!(tree.list(statements).len(), 2);
     let tree = check(b"type Value = '\\256'\nlocal next = 1");
-    assert_ne!(tree.diagnostics(), []);
+    assert_ne!(tree.diagnostics, []);
+    let alias = first(&tree, |kind| matches!(kind, NodeKind::TypeAlias { .. }));
 
-    let Parts::TypeAlias { annotation, .. } = first(&tree, Kind::TypeAlias).parts().unwrap() else {
-        panic!("missing alias view");
+    let NodeKind::TypeAlias { annotation, .. } = tree.node(alias).kind else {
+        panic!()
     };
 
-    assert_eq!(annotation.kind(), Kind::String);
-    first(&tree, Kind::Local);
+    assert!(matches!(
+        tree.node(annotation).kind,
+        NodeKind::String { .. }
+    ));
 
+    first(&tree, |kind| matches!(kind, NodeKind::Local { .. }));
     let tree = check(b"declare extern type Box with field: '\\256' next: number end");
-
-    assert_ne!(tree.diagnostics(), []);
+    assert_ne!(tree.diagnostics, []);
 
     assert_eq!(
-        tree.root()
-            .descendants()
-            .filter(|node| node.kind() == Kind::TypeField)
+        tree.nodes
+            .iter()
+            .filter(|node| matches!(node.kind, NodeKind::TypeField { .. }))
             .count(),
         2
     );
@@ -334,60 +230,61 @@ fn recovery_loops_make_progress() {
         b"class Box public ) end".as_slice(),
     ] {
         let tree = check(source);
-        assert_ne!(tree.diagnostics(), []);
-        first(&tree, Kind::Class);
+        assert_ne!(tree.diagnostics, []);
+        first(&tree, |kind| matches!(kind, NodeKind::Class { .. }));
     }
 
     let source = format!("return {}f{{}}{}", "(".repeat(254), ")".repeat(254));
     let tree = check(source.as_bytes());
 
     assert!(
-        tree.diagnostics()
+        tree.diagnostics
             .iter()
             .any(|diagnostic| diagnostic.message == "syntax nesting limit exceeded")
     );
 
-    first(&tree, Kind::Call);
+    first(&tree, |kind| matches!(kind, NodeKind::Call { .. }));
 }
 
 #[test]
-fn missing_roles_and_punctuation_remain_owned_and_zero_width() {
+fn missing_roles_and_punctuation_remain_explicit() {
     let tree = check(b"local value =\nreturn (item");
-    let missing = first(&tree, Kind::Missing);
+    let missing = first(&tree, |kind| matches!(kind, NodeKind::Missing { .. }));
 
-    assert!(
-        missing
-            .recovery()
-            .any(|expectation| expectation.expected == Expected::Role("expression"))
-    );
-
-    let group = first(&tree, Kind::Group);
-
-    assert!(
-        group
-            .recovery()
-            .any(|expectation| expectation.expected == Expected::Token(TokenKind::Byte(b')')))
-    );
-
-    for node in tree.root().descendants() {
-        for expectation in node.recovery() {
-            assert!(expectation.span.is_empty());
-
-            assert!(
-                expectation.span.start >= node.span().start
-                    && expectation.span.start <= tree.source().len()
-            );
+    assert!(matches!(
+        tree.node(missing).kind,
+        NodeKind::Missing {
+            expected: "expression"
         }
-    }
+    ));
 
-    let table = check(b"return {Value = item");
+    let group = first(&tree, |kind| matches!(kind, NodeKind::Group { .. }));
+
+    assert!(matches!(
+        tree.node(group).kind,
+        NodeKind::Group { closing: None, .. }
+    ));
 
     assert!(
-        table
-            .root()
-            .descendants()
-            .flat_map(View::recovery)
-            .any(|expectation| expectation.expected == Expected::Token(TokenKind::Byte(b'}')))
+        tree.diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.span.is_empty()
+                && diagnostic.span.start == tree.source.len())
+    );
+
+    let tree = check(b"return {Value = item");
+    let table = first(&tree, |kind| matches!(kind, NodeKind::Table { .. }));
+
+    assert!(matches!(
+        tree.node(table).kind,
+        NodeKind::Table { closing: None, .. }
+    ));
+
+    assert!(
+        tree.diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.span.is_empty()
+                && diagnostic.span.start == tree.source.len())
     );
 }
 
@@ -397,14 +294,10 @@ fn partially_consumed_depth_recovery_preserves_lossless_missing_nodes() {
     let tree = check(source.as_bytes());
 
     assert!(
-        tree.diagnostics()
+        tree.diagnostics
             .iter()
             .any(|diagnostic| diagnostic.message == "syntax nesting limit exceeded")
     );
 
-    assert!(
-        tree.root()
-            .descendants()
-            .any(|node| node.kind() == Kind::Missing)
-    );
+    first(&tree, |kind| matches!(kind, NodeKind::Missing { .. }));
 }
