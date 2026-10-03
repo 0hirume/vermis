@@ -301,3 +301,20 @@ fn partially_consumed_depth_recovery_preserves_lossless_missing_nodes() {
 
     first(&tree, |kind| matches!(kind, NodeKind::Missing { .. }));
 }
+
+#[test]
+fn failed_statements_are_not_reparsed() {
+    let unit = "(@;";
+    let diagnostics = check(unit.as_bytes()).diagnostics.len();
+
+    for depth in [2, 4, 8, 16, 64] {
+        let source = unit.repeat(depth);
+        let tree = check(source.as_bytes());
+
+        assert!(
+            tree.diagnostics.len() <= diagnostics * depth,
+            "{} diagnostics at depth {depth}",
+            tree.diagnostics.len()
+        );
+    }
+}

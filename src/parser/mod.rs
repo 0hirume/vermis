@@ -186,9 +186,21 @@ impl<'source> Parser<'source> {
 
     /// Records a diagnostic and inserts a zero-width missing node.
     pub fn missing(&mut self, expected: &'static str, diagnostic: Diagnostic) -> NodeIndex {
+        let index = self.missing_at(self.position(), expected, diagnostic);
+        self.end = self.current().span.start;
+        self.token_end = self.cursor;
+
+        index
+    }
+
+    fn missing_at(
+        &mut self,
+        position: TokenIndex,
+        expected: &'static str,
+        diagnostic: Diagnostic,
+    ) -> NodeIndex {
         self.diagnose(diagnostic);
-        let position = self.position();
-        let start = self.current().span.start;
+        let start = self.tokens[position.get()].span.start;
         let index = NodeIndex::new(self.nodes.len());
 
         self.nodes.push(Node {
@@ -196,9 +208,6 @@ impl<'source> Parser<'source> {
             span: Span { start, end: start },
             tokens: position..position,
         });
-
-        self.end = start;
-        self.token_end = self.cursor;
 
         index
     }
@@ -270,8 +279,6 @@ impl<'source> Parser<'source> {
             let begin = self.position();
             let nodes = self.nodes.len();
             let lists = self.lists.len();
-            let end = self.end;
-            let token_end = self.token_end;
 
             match self.statement() {
                 Ok(node) => {
@@ -289,10 +296,7 @@ impl<'source> Parser<'source> {
                 Err(diagnostic) => {
                     self.nodes.truncate(nodes);
                     self.lists.truncate(lists);
-                    self.cursor = begin.get();
-                    self.end = end;
-                    self.token_end = token_end;
-                    let node = self.missing("statement", diagnostic);
+                    let node = self.missing_at(begin, "statement", diagnostic);
 
                     statements.push(ListEntry {
                         node,

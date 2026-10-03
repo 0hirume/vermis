@@ -1054,8 +1054,6 @@ impl Parser<'_> {
             let begin = self.position();
             let nodes = self.nodes.len();
             let lists = self.lists.len();
-            let end = self.end;
-            let token_end = self.token_end;
 
             let node = match self.nested(|parser| parser.class_member(external)) {
                 Ok(node) => node,
@@ -1063,10 +1061,7 @@ impl Parser<'_> {
                 Err(diagnostic) => {
                     self.nodes.truncate(nodes);
                     self.lists.truncate(lists);
-                    self.cursor = begin.get();
-                    self.end = end;
-                    self.token_end = token_end;
-                    let node = self.missing("class member", diagnostic);
+                    let node = self.missing_at(begin, "class member", diagnostic);
 
                     members.push(ListEntry {
                         node,
