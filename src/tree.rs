@@ -1,20 +1,54 @@
-use std::ops::Range;
+use std::{num::NonZeroUsize, ops::Range};
 
 use crate::token::{Span, Token};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(transparent)]
 /// Index into a tree’s node storage.
-pub struct NodeIndex(
-    /// Zero-based storage index.
-    pub usize,
-);
+pub struct NodeIndex(NonZeroUsize);
+
+impl NodeIndex {
+    /// Creates an index from a zero-based position.
+    ///
+    /// # Panics
+    /// Panics if `index` is `usize::MAX`.
+    pub fn new(index: usize) -> Self {
+        Self(
+            NonZeroUsize::MIN
+                .checked_add(index)
+                .expect("node index overflow"),
+        )
+    }
+
+    /// Returns the zero-based position.
+    pub fn get(self) -> usize {
+        self.0.get() - 1
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(transparent)]
 /// Index into a tree’s token storage.
-pub struct TokenIndex(
-    /// Zero-based storage index.
-    pub usize,
-);
+pub struct TokenIndex(NonZeroUsize);
+
+impl TokenIndex {
+    /// Creates an index from a zero-based position.
+    ///
+    /// # Panics
+    /// Panics if `index` is `usize::MAX`.
+    pub fn new(index: usize) -> Self {
+        Self(
+            NonZeroUsize::MIN
+                .checked_add(index)
+                .expect("token index overflow"),
+        )
+    }
+
+    /// Returns the zero-based position.
+    pub fn get(self) -> usize {
+        self.0.get() - 1
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Half-open range in a tree’s list storage.
@@ -826,12 +860,12 @@ pub struct Tree<'source> {
 impl<'source> Tree<'source> {
     /// Returns a node by index.
     pub fn node(&self, index: NodeIndex) -> &Node {
-        &self.nodes[index.0]
+        &self.nodes[index.get()]
     }
 
     /// Returns a token by index.
     pub fn token(&self, index: TokenIndex) -> &Token {
-        &self.tokens[index.0]
+        &self.tokens[index.get()]
     }
 
     /// Returns the entries in a node list.

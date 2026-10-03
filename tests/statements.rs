@@ -24,7 +24,7 @@ fn unfinished_function_contains_empty_body() {
 
     assert!(body.span.start >= function.span.start);
     assert!(body.span.end <= function.span.end);
-    assert!(body.tokens.end.0 <= function.tokens.end.0);
+    assert!(body.tokens.end.get() <= function.tokens.end.get());
     assert_ne!(tree.diagnostics, []);
 }
 

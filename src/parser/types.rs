@@ -90,7 +90,7 @@ impl Parser<'_> {
         mut left: NodeIndex,
         leading: Option<TokenIndex>,
     ) -> NodeIndex {
-        let mut separator = leading.map(|token| self.tokens[token.0].kind);
+        let mut separator = leading.map(|token| self.tokens[token.get()].kind);
 
         if let Some(operator) = leading {
             let kind = if separator == Some(TokenKind::Symbol(Symbol::Pipe)) {

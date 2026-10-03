@@ -27,7 +27,7 @@ fn deeply_nested_types_report_limit() {
                 while !parser.at(TokenKind::EndOfFile) {
                     let position = parser.position();
                     let node = parser.recover(position, &[]);
-                    assert!(parser.position().0 > position.0);
+                    assert!(parser.position().get() > position.get());
 
                     entries.push(ListEntry {
                         node,

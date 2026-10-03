@@ -762,7 +762,7 @@ impl Parser<'_> {
                         let first_self = method && parameters.is_empty();
 
                         if first_self {
-                            if !matches!(self.node(name).kind, NodeKind::Name { token } if self.tokens[token.0].bytes(self.source) == b"self")
+                            if !matches!(self.node(name).kind, NodeKind::Name { token } if self.tokens[token.get()].bytes(self.source) == b"self")
                                 || annotation.is_some()
                             {
                                 self.diagnose(Diagnostic {
@@ -889,7 +889,7 @@ impl Parser<'_> {
             ..
         } = self.node(declaration).kind
         {
-            let token = self.tokens[prefix.0];
+            let token = self.tokens[prefix.get()];
 
             if token.bytes(self.source) == b"declare" {
                 return Err(self.error("declared functions cannot be exported"));
@@ -1061,7 +1061,7 @@ impl Parser<'_> {
                 Err(diagnostic) => {
                     self.nodes.truncate(nodes);
                     self.lists.truncate(lists);
-                    self.cursor = begin.0;
+                    self.cursor = begin.get();
                     self.end = end;
                     self.token_end = token_end;
                     let node = self.missing("class member", diagnostic);
@@ -1194,7 +1194,7 @@ impl Parser<'_> {
             return;
         };
 
-        if matches!(self.node(name).kind, NodeKind::Name { token } if self.tokens[token.0].bytes(self.source) == b"self")
+        if matches!(self.node(name).kind, NodeKind::Name { token } if self.tokens[token.get()].bytes(self.source) == b"self")
         {
             self.diagnose(Diagnostic {
                 span: self.node(annotation).span,

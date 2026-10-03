@@ -95,8 +95,8 @@ pub fn validate(tree: &Tree<'_>) {
     let mut pending = vec![tree.root];
 
     while let Some(index) = pending.pop() {
-        assert!(!seen[index.0], "shared child {index:?}");
-        seen[index.0] = true;
+        assert!(!seen[index.get()], "shared child {index:?}");
+        seen[index.get()] = true;
         let node = tree.node(index);
 
         assert!(
@@ -104,7 +104,11 @@ pub fn validate(tree: &Tree<'_>) {
             "{node:?}"
         );
 
-        assert!(node.tokens.start.0 <= node.tokens.end.0 && node.tokens.end.0 <= tree.tokens.len());
+        assert!(
+            node.tokens.start.get() <= node.tokens.end.get()
+                && node.tokens.end.get() <= tree.tokens.len()
+        );
+
         assert_eq!(tree.text(index), node.span.bytes(source));
 
         if matches!(node.kind, NodeKind::Missing { .. }) {
@@ -114,10 +118,14 @@ pub fn validate(tree: &Tree<'_>) {
 
         let (children, punctuation) = relations(tree, index);
         let mut end = node.span.start;
-        let mut token_end = node.tokens.start.0;
+        let mut token_end = node.tokens.start.get();
 
         for child in children {
-            assert!(child.0 < index.0, "non-postorder child {child:?}: {node:?}");
+            assert!(
+                child.get() < index.get(),
+                "non-postorder child {child:?}: {node:?}"
+            );
+
             let child_node = tree.node(child);
             let span = child_node.span;
 
@@ -128,18 +136,18 @@ pub fn validate(tree: &Tree<'_>) {
             );
 
             assert!(
-                child_node.tokens.start.0 >= token_end
-                    && child_node.tokens.end.0 <= node.tokens.end.0
+                child_node.tokens.start.get() >= token_end
+                    && child_node.tokens.end.get() <= node.tokens.end.get()
             );
 
             end = span.end;
-            token_end = child_node.tokens.end.0;
+            token_end = child_node.tokens.end.get();
             pending.push(child);
         }
 
         for token in punctuation {
             assert!(
-                token.0 >= node.tokens.start.0 && token.0 < node.tokens.end.0,
+                token.get() >= node.tokens.start.get() && token.get() < node.tokens.end.get(),
                 "punctuation outside node: {node:?}, {token:?}"
             );
 
@@ -147,7 +155,7 @@ pub fn validate(tree: &Tree<'_>) {
             assert!(span.start >= node.span.start && span.end <= node.span.end);
         }
 
-        let bytes: Vec<_> = tree.tokens[node.tokens.start.0..node.tokens.end.0]
+        let bytes: Vec<_> = tree.tokens[node.tokens.start.get()..node.tokens.end.get()]
             .iter()
             .flat_map(|token| token.bytes(source))
             .copied()

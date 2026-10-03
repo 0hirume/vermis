@@ -43,7 +43,7 @@ impl<'source> Parser<'source> {
 
     /// Returns the current token index.
     pub fn position(&self) -> TokenIndex {
-        TokenIndex(self.cursor)
+        TokenIndex::new(self.cursor)
     }
 
     /// Returns the current non-trivia token.
@@ -150,16 +150,16 @@ impl<'source> Parser<'source> {
 
     /// Returns a previously constructed node.
     pub fn node(&self, index: NodeIndex) -> &Node {
-        &self.nodes[index.0]
+        &self.nodes[index.get()]
     }
 
     /// Appends a node covering tokens consumed since `start`.
     pub fn append_node(&mut self, start: TokenIndex, kind: NodeKind) -> NodeIndex {
-        debug_assert!(start.0 <= self.cursor);
-        let index = NodeIndex(self.nodes.len());
-        let begin = self.tokens[start.0].span.start;
+        debug_assert!(start.get() <= self.cursor);
+        let index = NodeIndex::new(self.nodes.len());
+        let begin = self.tokens[start.get()].span.start;
         self.end = self.end.max(begin);
-        self.token_end = self.token_end.max(start.0);
+        self.token_end = self.token_end.max(start.get());
 
         self.nodes.push(Node {
             kind,
@@ -167,7 +167,7 @@ impl<'source> Parser<'source> {
                 start: begin,
                 end: self.end,
             },
-            tokens: start..TokenIndex(self.token_end),
+            tokens: start..TokenIndex::new(self.token_end),
         });
 
         index
@@ -186,7 +186,7 @@ impl<'source> Parser<'source> {
         self.diagnose(diagnostic);
         let position = self.position();
         let start = self.current().span.start;
-        let index = NodeIndex(self.nodes.len());
+        let index = NodeIndex::new(self.nodes.len());
 
         self.nodes.push(Node {
             kind: NodeKind::Missing { expected },
@@ -286,7 +286,7 @@ impl<'source> Parser<'source> {
                 Err(diagnostic) => {
                     self.nodes.truncate(nodes);
                     self.lists.truncate(lists);
-                    self.cursor = begin.0;
+                    self.cursor = begin.get();
                     self.end = end;
                     self.token_end = token_end;
                     let node = self.missing("statement", diagnostic);
@@ -334,14 +334,14 @@ impl<'source> Parser<'source> {
 
     /// Consumes erroneous syntax up to a recovery boundary.
     pub fn recover(&mut self, start: TokenIndex, stops: &[TokenKind]) -> NodeIndex {
-        debug_assert!(start.0 <= self.cursor);
+        debug_assert!(start.get() <= self.cursor);
 
         while !self.at(TokenKind::EndOfFile) && !stops.contains(&self.current().kind) {
             if self.consume(TokenKind::Symbol(Symbol::Semicolon)).is_some() {
                 break;
             }
 
-            if self.cursor > start.0 {
+            if self.cursor > start.get() {
                 let gap = &self.source[self.end..self.current().span.start];
 
                 if gap.contains(&b'\n')
@@ -371,7 +371,7 @@ impl<'source> Parser<'source> {
     pub fn finish(mut self, block: NodeIndex) -> Tree<'source> {
         debug_assert!(self.at(TokenKind::EndOfFile));
         debug_assert!(matches!(self.node(block).kind, NodeKind::Block { .. }));
-        let root = NodeIndex(self.nodes.len());
+        let root = NodeIndex::new(self.nodes.len());
 
         self.nodes.push(Node {
             kind: NodeKind::Root {
@@ -382,7 +382,7 @@ impl<'source> Parser<'source> {
                 start: 0,
                 end: self.source.len(),
             },
-            tokens: TokenIndex(0)..TokenIndex(self.tokens.len()),
+            tokens: TokenIndex::new(0)..TokenIndex::new(self.tokens.len()),
         });
 
         Tree {
