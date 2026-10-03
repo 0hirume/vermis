@@ -12,13 +12,11 @@ pub(crate) enum Rule {
     Parameters { types: bool },
     Generics { defaults: bool },
     Block(Vec<Keyword>),
-    Markup,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Context {
     pub rule: Rule,
-    pub markup: bool,
     pub depth: usize,
     pub previous: Option<Kind>,
     pub lexical: State,
@@ -27,7 +25,6 @@ pub(crate) struct Context {
 impl Context {
     pub(crate) fn equivalent(&self, other: &Self, pairs: &mut HashSet<(usize, usize)>) -> bool {
         self.rule == other.rule
-            && self.markup == other.markup
             && self.depth == other.depth
             && self.previous == other.previous
             && self.lexical.equivalent(&other.lexical, pairs)
@@ -59,7 +56,7 @@ pub struct Expectation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lexer::{Brace, Mode};
+    use crate::lexer::Brace;
 
     use crate::parser::{
         Parser,
@@ -68,22 +65,15 @@ mod tests {
         controlled_unit_in, parse_source,
     };
 
-    fn unit<'source>(source: &'source [u8], markup: bool, context: &Context) -> Builder<'source> {
-        controlled_unit_in(
-            source,
-            markup,
-            context,
-            &Execution::new(&Control::default()),
-        )
-        .unwrap()
+    fn unit<'source>(source: &'source [u8], context: &Context) -> Builder<'source> {
+        controlled_unit_in(source, context, &Execution::new(&Control::default())).unwrap()
     }
 
     fn controlled<'source>(
         source: &'source [u8],
-        markup: bool,
         control: &Control,
     ) -> Result<Builder<'source>, crate::parser::control::ParseError> {
-        crate::parser::controlled_in(source, markup, &Execution::new(control))
+        crate::parser::controlled_in(source, &Execution::new(control))
     }
 
     fn covers(boundary: &Boundary, span: Span) -> bool {
@@ -101,14 +91,14 @@ mod tests {
             b"function f<T>(value: Box<T>): number if const item = value then return f(item + 1) end end".as_slice(),
             b"declare callback: (value: number) -> (number, ...string)".as_slice(),
         ] {
-            let builder = parse_source::<false>(source, None);
+            let builder = parse_source(source, None);
             assert_eq!(builder.diagnostics, [] as [crate::Diagnostic; 0]);
 
             for node in &builder.nodes {
             let Some(boundary) = node.boundaries.last() else { continue };
 
             let start = boundary.consumed.start;
-            let replayed = unit(&source[start..], false, &boundary.context);
+            let replayed = unit(&source[start..], &boundary.context);
             let root = &replayed.nodes[replayed.root];
             assert_eq!(root.kind, node.kind, "{:?}", boundary.context.rule);
             assert_eq!(root.span.len(), node.span.len(), "{:?}", boundary.context.rule);
@@ -147,7 +137,7 @@ mod tests {
     #[test]
     fn direct_guards_do_not_absorb_child_reads() {
         let source = b"if const value = object + member then return value end";
-        let builder = parse_source::<false>(source, None);
+        let builder = parse_source(source, None);
 
         let condition = builder
             .nodes
@@ -181,7 +171,7 @@ mod tests {
         assert!(!covers(expression, tokens[3].span));
 
         let source = b"continue\nlocal value = 1";
-        let builder = parse_source::<false>(source, None);
+        let builder = parse_source(source, None);
 
         let statement = builder
             .nodes
@@ -216,7 +206,7 @@ mod tests {
 
     #[test]
     fn shared_nodes_keep_expression_and_condition_contracts() {
-        let builder = parse_source::<false>(b"if value then return end", None);
+        let builder = parse_source(b"if value then return end", None);
 
         let node = builder
             .nodes
@@ -241,9 +231,9 @@ mod tests {
     }
 
     #[test]
-    fn raw_markup_and_holes_keep_distinct_lexical_modes() {
-        let source = b"return <Frame>{`value {item}`}<Child Name='x'/></Frame>";
-        let builder = parse_source::<true>(source, None);
+    fn interpolations_replay_with_their_lexical_state() {
+        let source = b"return `value {item} {`child {other}`}`";
+        let builder = parse_source(source, None);
         assert_eq!(builder.diagnostics, [] as [crate::Diagnostic; 0]);
         assert_eq!(builder.tokens.len(), builder.checkpoints.len());
 
@@ -252,7 +242,7 @@ mod tests {
                 continue;
             };
 
-            let replayed = unit(&source[node.span.start..], true, &boundary.context);
+            let replayed = unit(&source[node.span.start..], &boundary.context);
             let root = &replayed.nodes[replayed.root];
             assert_eq!(root.kind, node.kind, "{:?}", boundary.context.rule);
 
@@ -288,12 +278,17 @@ mod tests {
         let child = builder
             .nodes
             .iter()
-            .find(|node| node.kind == Kind::Element && node.span.start > 7)
+            .find(|node| node.kind == Kind::Interpolation && node.span.start > 7)
             .unwrap();
 
         let boundary = child.boundaries.last().unwrap();
-        assert_eq!(boundary.context.lexical.mode, Mode::MarkupChildren);
-        let replayed = unit(&source[child.span.start..], true, &boundary.context);
+
+        assert_eq!(
+            boundary.context.lexical.braces,
+            crate::lexer::Braces::from([Brace::Interpolated])
+        );
+
+        let replayed = unit(&source[child.span.start..], &boundary.context);
         assert_eq!(replayed.nodes[replayed.root].span.len(), child.span.len());
 
         assert_eq!(
@@ -318,54 +313,16 @@ mod tests {
                 .collect::<Vec<_>>(),
             boundary.inspected
         );
-
-        assert!(
-            builder
-                .nodes
-                .iter()
-                .flat_map(|node| &node.boundaries)
-                .any(|boundary| {
-                    boundary.context.lexical.mode == Mode::MarkupHole
-                        && boundary.context.lexical.braces
-                            == crate::lexer::Braces::from([Brace::Interpolated])
-                })
-        );
-
-        let opening = builder
-            .nodes
-            .iter()
-            .find(|node| node.kind == Kind::Element && node.span.start == 7)
-            .unwrap();
-
-        let closing = builder
-            .nodes
-            .iter()
-            .find(|node| node.kind == Kind::Closing)
-            .unwrap();
-
-        assert!(
-            opening
-                .boundaries
-                .iter()
-                .any(|boundary| covers(boundary, closing.span))
-        );
     }
 
     #[test]
     fn recovery_origins_and_expectations_survive_discarded_nodes() {
-        for (source, markup) in [
-            (
-                b"local value = 0x\nreceiver.\nlocal tail =".as_slice(),
-                false,
-            ),
-            (b"return <Frame Value={item +".as_slice(), true),
-            (b"function f(value:".as_slice(), false),
+        for source in [
+            b"local value = 0x\nreceiver.\nlocal tail =".as_slice(),
+            b"return { Value = item +".as_slice(),
+            b"function f(value:".as_slice(),
         ] {
-            let builder = if markup {
-                parse_source::<true>(source, None)
-            } else {
-                parse_source::<false>(source, None)
-            };
+            let builder = parse_source(source, None);
 
             assert_ne!(builder.diagnostics, []);
             assert_eq!(builder.diagnostics.len(), builder.origins.len());
@@ -399,7 +356,7 @@ mod tests {
         }
 
         let source = b"return (value";
-        let builder = parse_source::<false>(source, None);
+        let builder = parse_source(source, None);
 
         let (owner, group) = builder
             .nodes
@@ -423,9 +380,9 @@ mod tests {
     }
 
     #[test]
-    fn transactions_restore_scanner_and_dependencies() {
+    fn transactions_restore_tokens_and_dependencies() {
         let source = b"`before {value + 1} after`";
-        let mut parser = Parser::<true>::new(source, 37, None, State::default(), None);
+        let mut parser = Parser::new(source, 37, None, &State::default(), None);
         parser.skip_trivia();
         parser.enter(Rule::Expression(0), 0, parser.entry_state());
         let checkpoint = parser.checkpoint();
@@ -450,13 +407,12 @@ mod tests {
 
         let context = Context {
             rule: Rule::Expression(0),
-            markup: false,
             depth: 256,
             previous: None,
             lexical: State::default(),
         };
 
-        let builder = unit(b"value", false, &context);
+        let builder = unit(b"value", &context);
         assert_eq!(builder.nodes[builder.root].kind, Kind::Missing);
 
         assert!(
@@ -518,7 +474,7 @@ mod tests {
     fn configured_limits_return_resource_errors_and_default_depth_recovers() {
         use crate::parser::control::{Limits, ParseError, Resource};
         let source = b"local value = f(1 + 2)";
-        let baseline = controlled(source, false, &Control::default()).unwrap();
+        let baseline = controlled(source, &Control::default()).unwrap();
 
         for (limits, resource) in [
             (
@@ -552,7 +508,6 @@ mod tests {
         ] {
             let result = controlled(
                 source,
-                false,
                 &Control {
                     limits,
                     ..Control::default()
@@ -564,7 +519,6 @@ mod tests {
 
         let result = controlled(
             b"local value =",
-            false,
             &Control {
                 limits: Limits {
                     diagnostics: Some(0),
@@ -596,10 +550,10 @@ mod tests {
             ..Control::default()
         });
 
-        let result = controlled_unit_in(b"1", false, &context, &execution);
+        let result = controlled_unit_in(b"1", &context, &execution);
         assert!(matches!(result, Err(ParseError::Limit(Resource::Depth))));
         let source = format!("return {}value{}", "(".repeat(300), ")".repeat(300));
-        let builder = controlled(source.as_bytes(), false, &Control::default()).unwrap();
+        let builder = controlled(source.as_bytes(), &Control::default()).unwrap();
 
         assert!(
             builder
@@ -619,68 +573,10 @@ mod tests {
             ..Control::default()
         };
 
-        for markup in [false, true] {
-            assert!(matches!(
-                crate::parser::controlled(b"return <Frame>{value}</Frame>", markup, &control),
-                Err(ParseError::Cancelled)
-            ));
-        }
-    }
-
-    #[test]
-    fn raw_markup_boundaries_replay_the_actual_unconsumed_byte() {
-        use crate::lexer::Braces;
-
-        for mode in [Mode::MarkupTag, Mode::MarkupChildren] {
-            let lexical = State {
-                braces: Braces::from([Brace::Interpolated, Brace::Normal]),
-                mode,
-            };
-
-            let context = Context {
-                rule: Rule::Markup,
-                markup: true,
-                depth: 7,
-                previous: None,
-                lexical: lexical.clone(),
-            };
-
-            for source in [
-                b"<Child/> text<Sibling/>".as_slice(),
-                b"<Child/></Parent>".as_slice(),
-                b"<Child/>".as_slice(),
-            ] {
-                let builder = unit(source, true, &context);
-                let root = &builder.nodes[builder.root];
-                assert_eq!(root.kind, Kind::Element);
-                assert_eq!(root.span, Span { start: 0, end: 8 });
-                let boundary = root.boundaries.last().unwrap();
-                assert_eq!(boundary.context, context);
-                assert_eq!(boundary.exit, lexical);
-
-                assert_eq!(
-                    boundary.current,
-                    Token {
-                        kind: source
-                            .get(8)
-                            .map_or(TokenKind::Eof, |byte| TokenKind::Byte(*byte)),
-                        span: Span {
-                            start: 8,
-                            end: 9.min(source.len())
-                        },
-                    }
-                );
-
-                assert!(covers(boundary, boundary.current.span));
-            }
-
-            for source in [b"Child/>".as_slice(), b"".as_slice()] {
-                let builder = unit(source, true, &context);
-                assert_eq!(builder.nodes[builder.root].kind, Kind::Error);
-                assert_ne!(builder.diagnostics, [] as [crate::Diagnostic; 0]);
-                assert!(builder.origins.iter().all(Option::is_some));
-            }
-        }
+        assert!(matches!(
+            crate::parser::controlled(b"return value", &control),
+            Err(ParseError::Cancelled)
+        ));
     }
 
     #[test]
@@ -689,7 +585,6 @@ mod tests {
 
         let context = Context {
             rule: Rule::Expression(0),
-            markup: false,
             depth: 0,
             previous: None,
             lexical: State::default(),
@@ -703,19 +598,24 @@ mod tests {
             ..Control::default()
         });
 
-        controlled_unit_in(b"1", false, &context, &execution).unwrap();
+        controlled_unit_in(b"1", &context, &execution).unwrap();
         assert_eq!(execution.snapshot().tokens, 2);
 
         assert!(matches!(
-            controlled_unit_in(b"2", false, &context, &execution),
+            controlled_unit_in(b"2", &context, &execution),
             Err(ParseError::Limit(Resource::Tokens))
         ));
 
         let execution = Execution::new(&Control::default());
         assert!(execution.token() && execution.node() && execution.diagnostic());
 
-        let mut parser =
-            Parser::<true>::new(b"value", 9, None, State::default(), Some(execution.clone()));
+        let mut parser = Parser::new(
+            b"value",
+            9,
+            None,
+            &State::default(),
+            Some(execution.clone()),
+        );
 
         parser.skip_trivia();
         parser.enter(Rule::Expression(0), 0, parser.entry_state());
@@ -731,7 +631,7 @@ mod tests {
 
     #[test]
     fn successful_child_depth_stays_out_of_parent_direct_measurements() {
-        let builder = parse_source::<false>(b"return (((value)))", None);
+        let builder = parse_source(b"return (((value)))", None);
 
         let block = builder
             .nodes
@@ -757,7 +657,7 @@ mod tests {
                 .any(|boundary| boundary.maximum_depth == 5)
         );
 
-        let empty = parse_source::<false>(b"", None);
+        let empty = parse_source(b"", None);
 
         let boundaries: Vec<_> = empty
             .nodes
@@ -765,7 +665,7 @@ mod tests {
             .flat_map(|node| &node.boundaries)
             .collect();
 
-        assert!(!boundaries.is_empty());
+        assert_ne!(boundaries, [] as [&Boundary; 0]);
 
         assert!(
             boundaries
@@ -776,7 +676,7 @@ mod tests {
 
     #[test]
     fn lexical_diagnostics_do_not_replace_required_roles_or_create_tokens() {
-        let builder = parse_source::<false>(b"const value 'unfinished", None);
+        let builder = parse_source(b"const value 'unfinished", None);
         assert_eq!(builder.diagnostics[0].message, "unterminated string");
 
         let missing = builder
@@ -805,23 +705,6 @@ mod tests {
                 .tokens
                 .iter()
                 .any(|token| token.kind == TokenKind::Byte(b'='))
-        );
-
-        let builder = parse_source::<true>(b"return <Frame = ", None);
-
-        assert!(
-            builder
-                .nodes
-                .iter()
-                .flat_map(|node| &node.recovery)
-                .any(|expectation| expectation.expected == Expected::Token(TokenKind::Byte(b'{')))
-        );
-
-        assert!(
-            !builder
-                .tokens
-                .iter()
-                .any(|token| token.kind == TokenKind::Byte(b'{'))
         );
     }
 }

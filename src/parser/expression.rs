@@ -2,7 +2,7 @@ use super::context::Rule;
 use super::{InterpolatedKind, Keyword, Kind, Operator, Parsed, Parser, TokenKind};
 use std::borrow::Cow;
 
-impl<const MARKUP: bool> Parser<'_, MARKUP> {
+impl Parser<'_> {
     pub(super) fn expression(&mut self, minimum: u8) -> Parsed {
         self.scoped(Rule::Expression(minimum), |parser| {
             Ok(parser.required("expression", |parser| {
@@ -88,8 +88,6 @@ impl<const MARKUP: bool> Parser<'_, MARKUP> {
             self.expect(TokenKind::Byte(b')'), "expected closing expression");
 
             self.node(Kind::Group, start, [inner])
-        } else if MARKUP && self.byte(b'<') {
-            self.markup()?
         } else if self.at(TokenKind::Name) {
             self.name()
         } else {

@@ -20,46 +20,6 @@ pub struct Children<'tree> {
 pub enum Parts<'tree> {
     Leaf,
 
-    Markup {
-        opening: View<'tree>,
-        children: Option<View<'tree>>,
-        closing: Option<View<'tree>>,
-    },
-
-    Tag {
-        name: Option<View<'tree>>,
-        attributes: Option<View<'tree>>,
-    },
-
-    MarkupName {
-        segments: Children<'tree>,
-    },
-
-    MarkupAttributes {
-        attributes: Children<'tree>,
-    },
-
-    MarkupChildren {
-        children: Children<'tree>,
-    },
-
-    MarkupAttribute {
-        name: View<'tree>,
-        value: Option<View<'tree>>,
-    },
-
-    MarkupSpread {
-        expression: View<'tree>,
-    },
-
-    MarkupInferred {
-        expression: View<'tree>,
-    },
-
-    MarkupExpression {
-        expression: View<'tree>,
-    },
-
     Root {
         block: View<'tree>,
     },
@@ -407,18 +367,6 @@ impl<'tree> View<'tree> {
     #[must_use]
     pub fn parts(self) -> Option<Parts<'tree>> {
         match self.kind() {
-            Kind::Element
-            | Kind::Fragment
-            | Kind::Opening
-            | Kind::Closing
-            | Kind::MarkupName
-            | Kind::MarkupAttributes
-            | Kind::MarkupAttribute
-            | Kind::MarkupSpread
-            | Kind::MarkupInferred
-            | Kind::MarkupChildren
-            | Kind::MarkupExpression => self.markup(),
-
             Kind::Root
             | Kind::Block
             | Kind::Local
@@ -489,8 +437,6 @@ impl<'tree> View<'tree> {
 
             Kind::Error
             | Kind::Missing
-            | Kind::MarkupText
-            | Kind::MarkupComment
             | Kind::Name
             | Kind::Number
             | Kind::String
@@ -500,54 +446,6 @@ impl<'tree> View<'tree> {
             | Kind::Break
             | Kind::Continue => self.children().is_empty().then_some(Parts::Leaf),
         }
-    }
-
-    fn markup(self) -> Option<Parts<'tree>> {
-        let mut children = self.children();
-
-        let parts = match self.kind() {
-            Kind::Element | Kind::Fragment => Parts::Markup {
-                opening: children.next()?,
-                children: children.optional(Kind::MarkupChildren),
-                closing: children.optional(Kind::Closing),
-            },
-
-            Kind::Opening | Kind::Closing => Parts::Tag {
-                name: children.optional(Kind::MarkupName),
-                attributes: children.optional(Kind::MarkupAttributes),
-            },
-
-            Kind::MarkupName => return Some(Parts::MarkupName { segments: children }),
-
-            Kind::MarkupAttributes => {
-                return Some(Parts::MarkupAttributes {
-                    attributes: children,
-                });
-            }
-
-            Kind::MarkupChildren => return Some(Parts::MarkupChildren { children }),
-
-            Kind::MarkupAttribute => Parts::MarkupAttribute {
-                name: children.next()?,
-                value: children.next(),
-            },
-
-            Kind::MarkupSpread => Parts::MarkupSpread {
-                expression: children.next()?,
-            },
-
-            Kind::MarkupInferred => Parts::MarkupInferred {
-                expression: children.next()?,
-            },
-
-            Kind::MarkupExpression => Parts::MarkupExpression {
-                expression: children.next()?,
-            },
-
-            _ => return None,
-        };
-
-        children.next().is_none().then_some(parts)
     }
 
     fn statement(self) -> Option<Parts<'tree>> {

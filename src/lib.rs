@@ -18,7 +18,7 @@ pub use lexer::{Lexer, classify_name};
 pub use navigation::{Descendants, Element, Elements, TokenView, Tokens};
 pub use parser::context::{Expectation, Expected};
 pub use parser::control::{Control, Limits, ParseError, Resource};
-pub use parser::{parse, parse_luaux};
+pub use parser::parse;
 pub use source::{CoordinateError, Position};
 pub use syntax::{InterpolatedKind, Keyword, LexError, Operator, Span, Token, TokenKind};
 pub use tree::{Diagnostic, Kind, Tree};
@@ -29,12 +29,5 @@ pub use view::{Children, Parts, View};
 ///
 /// Returns an error if parsing is cancelled or exceeds a configured resource limit.
 pub fn parse_with(source: &[u8], control: &Control) -> Result<Tree, ParseError> {
-    parser::controlled(source, false, control)
-}
-
-/// # Errors
-///
-/// Returns an error if parsing is cancelled or exceeds a configured resource limit.
-pub fn parse_luaux_with(source: &[u8], control: &Control) -> Result<Tree, ParseError> {
-    parser::controlled(source, true, control)
+    parser::controlled(source, control)
 }

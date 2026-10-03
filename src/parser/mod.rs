@@ -2,11 +2,10 @@ pub(crate) mod builder;
 pub(crate) mod context;
 pub(crate) mod control;
 mod expression;
-mod markup;
 mod statement;
 mod types;
 
-use crate::lexer::{Checkpoint as LexicalCheckpoint, State};
+use crate::lexer::State;
 use crate::{Diagnostic, InterpolatedKind, Keyword, Kind, Operator, Span, Token, TokenKind, Tree};
 use builder::{Builder, Node};
 use context::{Boundary, Context, Expectation, Expected, Rule};
@@ -24,59 +23,41 @@ struct Frame {
     maximum_depth: usize,
 }
 
-struct Checkpoint<'source> {
+struct Checkpoint {
     nodes: usize,
     children: usize,
-    tokens: usize,
-    pending: Vec<Token>,
-    checkpoints: Vec<LexicalCheckpoint>,
     diagnostics: usize,
     origins: usize,
     cursor: usize,
     end: usize,
     depth: usize,
     previous: Option<Kind>,
-    lexer: Option<crate::Lexer<'source>>,
-    lexical: State,
     frames: Vec<(usize, usize, usize)>,
     ledger: Option<Ledger>,
 }
 
-struct Parser<'source, const MARKUP: bool> {
+struct Parser<'source> {
     builder: Builder<'source>,
-    source: &'source [u8],
     cursor: usize,
     end: usize,
     depth: usize,
-    lexer: Option<crate::Lexer<'source>>,
     previous: Option<Kind>,
-    lexical: State,
     frames: RefCell<Vec<Frame>>,
     execution: Option<Arc<Execution>>,
 }
 
 #[must_use]
 pub fn parse(source: &[u8]) -> Tree {
-    parse_source::<false>(source, None).finish(crate::source::Source::from(source), false)
+    parse_source(source, None).finish(crate::source::Source::from(source))
 }
 
-#[must_use]
-pub fn parse_luaux(source: &[u8]) -> Tree {
-    parse_source::<true>(source, None).finish(crate::source::Source::from(source), true)
-}
-
-pub(crate) fn controlled(
-    source: &[u8],
-    markup: bool,
-    control: &Control,
-) -> Result<Tree, ParseError> {
+pub(crate) fn controlled(source: &[u8], control: &Control) -> Result<Tree, ParseError> {
     let execution = Execution::new(control);
-    let builder = controlled_in(source, markup, &execution)?;
+    let builder = controlled_in(source, &execution)?;
 
     Tree::freeze(
         builder,
         crate::source::Source::from(source),
-        markup,
         None,
         Some(&execution),
     )
@@ -84,14 +65,9 @@ pub(crate) fn controlled(
 
 pub(crate) fn controlled_in<'source>(
     source: &'source [u8],
-    markup: bool,
     execution: &Arc<Execution>,
 ) -> Result<Builder<'source>, ParseError> {
-    let builder = if markup {
-        parse_source::<true>(source, Some(execution.clone()))
-    } else {
-        parse_source::<false>(source, Some(execution.clone()))
-    };
+    let builder = parse_source(source, Some(execution.clone()));
 
     match builder.error {
         Some(error) => Err(error),
@@ -101,15 +77,10 @@ pub(crate) fn controlled_in<'source>(
 
 pub(crate) fn controlled_unit_in<'source>(
     source: &'source [u8],
-    markup: bool,
     context: &Context,
     execution: &Arc<Execution>,
 ) -> Result<Builder<'source>, ParseError> {
-    let builder = if markup {
-        replay::<true>(source, context, Some(execution.clone()))
-    } else {
-        replay::<false>(source, context, Some(execution.clone()))
-    };
+    let builder = replay(source, context, Some(execution.clone()));
 
     match builder.error {
         Some(error) => Err(error),
@@ -117,16 +88,16 @@ pub(crate) fn controlled_unit_in<'source>(
     }
 }
 
-fn replay<'source, const MARKUP: bool>(
+fn replay<'source>(
     source: &'source [u8],
     context: &Context,
     execution: Option<Arc<Execution>>,
 ) -> Builder<'source> {
-    let mut parser = Parser::<MARKUP>::new(
+    let mut parser = Parser::new(
         source,
         context.depth,
         context.previous,
-        context.lexical.clone(),
+        &context.lexical,
         execution,
     );
 
@@ -159,14 +130,6 @@ fn replay<'source, const MARKUP: bool>(
 
         Rule::Generics { defaults } => parser.generics(*defaults),
         Rule::Block(stops) => Ok(parser.block(stops)),
-
-        Rule::Markup => {
-            if MARKUP {
-                parser.markup()
-            } else {
-                Err(parser.error("markup is disabled"))
-            }
-        }
     };
 
     parser.builder.root = match result {
@@ -240,11 +203,8 @@ fn replay<'source, const MARKUP: bool>(
     parser.builder
 }
 
-fn parse_source<const MARKUP: bool>(
-    source: &[u8],
-    execution: Option<Arc<Execution>>,
-) -> Builder<'_> {
-    let mut parser = Parser::<MARKUP>::new(source, 0, None, State::default(), execution);
+fn parse_source(source: &[u8], execution: Option<Arc<Execution>>) -> Builder<'_> {
+    let mut parser = Parser::new(source, 0, None, &State::default(), execution);
     parser.skip_trivia();
     let block = parser.block(&[]);
     parser.end = source.len();
@@ -259,12 +219,12 @@ fn parse_source<const MARKUP: bool>(
     parser.builder
 }
 
-impl<'source, const MARKUP: bool> Parser<'source, MARKUP> {
+impl<'source> Parser<'source> {
     fn new(
         source: &'source [u8],
         depth: usize,
         previous: Option<Kind>,
-        lexical: State,
+        lexical: &State,
         execution: Option<Arc<Execution>>,
     ) -> Self {
         if let Some(execution) = &execution {
@@ -273,23 +233,11 @@ impl<'source, const MARKUP: bool> Parser<'source, MARKUP> {
         }
 
         Self {
-            builder: Builder::with_state(source, MARKUP, &lexical, execution.as_ref()),
-            source,
+            builder: Builder::with_state(source, lexical, execution.as_ref()),
             cursor: 0,
             end: 0,
             depth,
-            lexer: if MARKUP {
-                Some(crate::Lexer::controlled(
-                    source,
-                    0,
-                    &lexical,
-                    execution.clone(),
-                ))
-            } else {
-                None
-            },
             previous,
-            lexical,
             frames: RefCell::new(Vec::new()),
             execution,
         }
@@ -312,11 +260,7 @@ impl<'source, const MARKUP: bool> Parser<'source, MARKUP> {
             frame.maximum_depth = frame
                 .maximum_depth
                 .max(self.depth)
-                .max(self.lexical.braces.len());
-
-            if let Some(checkpoint) = self.builder.checkpoints.get(self.cursor) {
-                frame.maximum_depth = frame.maximum_depth.max(checkpoint.state.braces.len());
-            }
+                .max(self.builder.checkpoints[self.cursor].state.braces.len());
         }
     }
 
@@ -334,18 +278,13 @@ impl<'source, const MARKUP: bool> Parser<'source, MARKUP> {
     }
 
     fn entry_state(&self) -> State {
-        if let Some(checkpoint) = self.builder.checkpoints.get(self.cursor) {
-            checkpoint.state.clone()
-        } else {
-            self.lexical.clone()
-        }
+        self.builder.checkpoints[self.cursor].state.clone()
     }
 
     fn enter(&self, rule: Rule, start: usize, lexical: State) {
         self.frames.borrow_mut().push(Frame {
             context: Context {
                 rule,
-                markup: MARKUP,
                 depth: self.depth,
                 previous: self.previous,
                 lexical,
@@ -490,25 +429,6 @@ impl<'source, const MARKUP: bool> Parser<'source, MARKUP> {
             return TokenKind::Eof;
         }
 
-        if MARKUP {
-            let mut lexer = self.lexer.as_ref().expect("markup token stream").clone();
-
-            for token in &mut lexer {
-                self.inspect(token.span);
-
-                if !trivia(token.kind) {
-                    return token.kind;
-                }
-            }
-
-            self.inspect(Span {
-                start: self.source.len(),
-                end: self.source.len(),
-            });
-
-            return TokenKind::Eof;
-        }
-
         let begin = self.cursor + usize::from(self.raw_current().kind != TokenKind::Eof);
 
         for token in &self.builder.tokens[begin..] {
@@ -523,54 +443,7 @@ impl<'source, const MARKUP: bool> Parser<'source, MARKUP> {
     }
 
     fn skip_trivia(&mut self) {
-        if !MARKUP {
-            while trivia(self.raw_current().kind) {
-                self.cursor += 1;
-            }
-
-            return;
-        }
-
-        loop {
-            if self.cursor == self.builder.tokens.len() {
-                let lexer = self.lexer.as_mut().expect("lazy token stream");
-                let checkpoint = lexer.checkpoint();
-
-                let token = match lexer.next() {
-                    Some(token)
-                        if self
-                            .execution
-                            .as_ref()
-                            .is_none_or(|execution| execution.token()) =>
-                    {
-                        token
-                    }
-
-                    _ if self
-                        .execution
-                        .as_ref()
-                        .is_some_and(|execution| !execution.poll()) =>
-                    {
-                        Token {
-                            kind: TokenKind::Eof,
-                            span: Span {
-                                start: checkpoint.cursor,
-                                end: checkpoint.cursor,
-                            },
-                        }
-                    }
-
-                    _ => panic!("token stream ends in EOF"),
-                };
-
-                self.builder.tokens.push(token);
-                self.builder.checkpoints.push(checkpoint);
-            }
-
-            if !trivia(self.raw_current().kind) {
-                break;
-            }
-
+        while trivia(self.raw_current().kind) {
             self.cursor += 1;
         }
     }
@@ -700,29 +573,16 @@ impl<'source, const MARKUP: bool> Parser<'source, MARKUP> {
         node
     }
 
-    fn checkpoint(&self) -> Checkpoint<'source> {
+    fn checkpoint(&self) -> Checkpoint {
         Checkpoint {
             nodes: self.builder.nodes.len(),
             children: self.builder.children.len(),
-            tokens: self.builder.tokens.len(),
-            pending: if MARKUP {
-                self.builder.tokens[self.cursor..].to_vec()
-            } else {
-                Vec::new()
-            },
-            checkpoints: if MARKUP {
-                self.builder.checkpoints[self.cursor..].to_vec()
-            } else {
-                Vec::new()
-            },
             diagnostics: self.builder.diagnostics.len(),
             origins: self.builder.origins.len(),
             cursor: self.cursor,
             end: self.end,
             depth: self.depth,
             previous: self.previous,
-            lexer: self.lexer.clone(),
-            lexical: self.lexical.clone(),
             frames: self
                 .frames
                 .borrow()
@@ -742,32 +602,15 @@ impl<'source, const MARKUP: bool> Parser<'source, MARKUP> {
         }
     }
 
-    fn restore(&mut self, checkpoint: Checkpoint<'source>) {
+    fn restore(&mut self, checkpoint: Checkpoint) {
         self.builder.nodes.truncate(checkpoint.nodes);
         self.builder.children.truncate(checkpoint.children);
-
-        self.builder.tokens.truncate(if MARKUP {
-            checkpoint.cursor
-        } else {
-            checkpoint.tokens
-        });
-
-        self.builder.checkpoints.truncate(if MARKUP {
-            checkpoint.cursor
-        } else {
-            checkpoint.tokens
-        });
-
-        self.builder.tokens.extend(checkpoint.pending);
-        self.builder.checkpoints.extend(checkpoint.checkpoints);
         self.builder.diagnostics.truncate(checkpoint.diagnostics);
         self.builder.origins.truncate(checkpoint.origins);
         self.cursor = checkpoint.cursor;
         self.end = checkpoint.end;
         self.depth = checkpoint.depth;
         self.previous = checkpoint.previous;
-        self.lexer = checkpoint.lexer;
-        self.lexical = checkpoint.lexical;
         self.frames.borrow_mut().truncate(checkpoint.frames.len());
 
         for (frame, (inspected, recovery, maximum_depth)) in
@@ -783,10 +626,9 @@ impl<'source, const MARKUP: bool> Parser<'source, MARKUP> {
         }
     }
 
-    fn rollback(&mut self, checkpoint: Checkpoint<'source>) {
+    fn rollback(&mut self, checkpoint: Checkpoint) {
         let nodes = checkpoint.nodes;
         let ledger = checkpoint.ledger;
-        let tokens_before = checkpoint.tokens;
         let diagnostics_before = checkpoint.diagnostics;
         let diagnostics = self.builder.diagnostics[checkpoint.diagnostics..].to_vec();
 
@@ -795,12 +637,8 @@ impl<'source, const MARKUP: bool> Parser<'source, MARKUP> {
             .resize(self.builder.diagnostics.len(), None);
 
         let origins = self.builder.origins[checkpoint.diagnostics..].to_vec();
-        let tokens = std::mem::take(&mut self.builder.tokens);
-        let checkpoints = std::mem::take(&mut self.builder.checkpoints);
         let cursor = self.cursor;
         let end = self.end;
-        let lexer = self.lexer.take();
-        let lexical = self.lexical.clone();
 
         let frames: Vec<_> = self
             .frames
@@ -828,12 +666,8 @@ impl<'source, const MARKUP: bool> Parser<'source, MARKUP> {
             .collect();
 
         self.restore(checkpoint);
-        self.builder.tokens = tokens;
-        self.builder.checkpoints = checkpoints;
         self.cursor = cursor;
         self.end = end;
-        self.lexer = lexer;
-        self.lexical = lexical;
 
         for (frame, (inspected, recovery, maximum_depth)) in
             self.frames.borrow_mut().iter_mut().zip(frames)
@@ -863,13 +697,7 @@ impl<'source, const MARKUP: bool> Parser<'source, MARKUP> {
         }
 
         if let (Some(execution), Some(ledger)) = (&self.execution, ledger) {
-            execution.retain(
-                ledger,
-                tokens_before,
-                self.builder.tokens.len(),
-                diagnostics_before,
-                self.builder.diagnostics.len(),
-            );
+            execution.retain(ledger, diagnostics_before, self.builder.diagnostics.len());
         }
     }
 
@@ -888,15 +716,6 @@ impl<'source, const MARKUP: bool> Parser<'source, MARKUP> {
                 node
             }
         }
-    }
-
-    fn truncate_tokens(&mut self, length: usize) {
-        if let Some(execution) = &self.execution {
-            execution.discard_tokens(self.builder.tokens.len() - length);
-        }
-
-        self.builder.tokens.truncate(length);
-        self.builder.checkpoints.truncate(length);
     }
 
     fn nested(&mut self, parse: impl FnOnce(&mut Self) -> Parsed) -> Parsed {

@@ -34,7 +34,6 @@ pub(crate) struct Builder<'source> {
 impl<'source> Builder<'source> {
     pub(super) fn with_state(
         source: &'source [u8],
-        lazy: bool,
         state: &State,
         execution: Option<&Arc<Execution>>,
     ) -> Self {
@@ -50,43 +49,41 @@ impl<'source> Builder<'source> {
             error: None,
         };
 
-        if !lazy {
-            let mut lexer = Lexer::controlled(source, 0, state, execution.cloned());
+        let mut lexer = Lexer::controlled(source, 0, state, execution.cloned());
 
-            loop {
-                let checkpoint = lexer.checkpoint();
+        loop {
+            let checkpoint = lexer.checkpoint();
 
-                let Some(token) = lexer.next() else { break };
+            let Some(token) = lexer.next() else { break };
 
-                if execution.is_some_and(|execution| !execution.token()) {
-                    break;
-                }
-
-                builder.tokens.push(token);
-                builder.checkpoints.push(checkpoint);
+            if execution.is_some_and(|execution| !execution.token()) {
+                break;
             }
 
-            if builder
-                .tokens
-                .last()
-                .is_none_or(|token| token.kind != crate::TokenKind::Eof)
-            {
-                let cursor = builder.tokens.last().map_or(0, |token| token.span.end);
+            builder.tokens.push(token);
+            builder.checkpoints.push(checkpoint);
+        }
 
-                builder.tokens.push(Token {
-                    kind: crate::TokenKind::Eof,
-                    span: Span {
-                        start: cursor,
-                        end: cursor,
-                    },
-                });
+        if builder
+            .tokens
+            .last()
+            .is_none_or(|token| token.kind != crate::TokenKind::Eof)
+        {
+            let cursor = builder.tokens.last().map_or(0, |token| token.span.end);
 
-                builder.checkpoints.push(Checkpoint {
-                    cursor,
-                    state: lexer.state(),
-                    finished: false,
-                });
-            }
+            builder.tokens.push(Token {
+                kind: crate::TokenKind::Eof,
+                span: Span {
+                    start: cursor,
+                    end: cursor,
+                },
+            });
+
+            builder.checkpoints.push(Checkpoint {
+                cursor,
+                state: lexer.state(),
+                finished: false,
+            });
         }
 
         builder.error = execution.and_then(|execution| execution.error());
@@ -94,11 +91,7 @@ impl<'source> Builder<'source> {
         builder
     }
 
-    pub(super) fn text(&self, node: usize) -> &[u8] {
-        self.nodes[node].span.bytes(self.source)
-    }
-
-    pub(crate) fn finish(self, source: Source, markup: bool) -> Tree {
-        Tree::from_builder(self, source, markup)
+    pub(crate) fn finish(self, source: Source) -> Tree {
+        Tree::from_builder(self, source)
     }
 }

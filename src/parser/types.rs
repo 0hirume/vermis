@@ -1,7 +1,7 @@
 use super::context::Rule;
 use super::{Keyword, Kind, Operator, Parsed, Parser, TokenKind};
 
-impl<const MARKUP: bool> Parser<'_, MARKUP> {
+impl Parser<'_> {
     pub(super) fn annotation(&mut self) -> Parsed {
         self.annotation_context(false, false)
     }

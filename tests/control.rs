@@ -1,42 +1,40 @@
 use std::sync::{Arc, atomic::AtomicBool};
 
-use vermis::{
-    Control, Edit, EditError, Limits, ParseError, Resource, Span, parse, parse_luaux_with,
-    parse_with,
-};
+use vermis::{Control, Edit, EditError, Limits, ParseError, Resource, Span, parse, parse_with};
 
 #[test]
 fn controlled_parses_preserve_losslessness_and_report_cancellation() {
-    for parser in [parse_with, parse_luaux_with] {
-        let source = b"local value = f(1 + 2)\n";
-        let tree = parser(source, &Control::default()).unwrap();
-        assert_eq!(tree.root().text(), source);
+    let source = b"local value = f(1 + 2)\n";
+    let tree = parse_with(source, &Control::default()).unwrap();
+    assert_eq!(tree.root().text(), source);
 
-        assert_eq!(
-            tree.tokens()
-                .flat_map(|token| token.text().iter().copied())
-                .collect::<Vec<_>>(),
-            source
-        );
+    assert_eq!(
+        tree.tokens()
+            .flat_map(|token| token.text().iter().copied())
+            .collect::<Vec<_>>(),
+        source
+    );
 
-        let control = Control {
-            cancellation: Some(Arc::new(AtomicBool::new(true))),
-            ..Control::default()
-        };
+    let control = Control {
+        cancellation: Some(Arc::new(AtomicBool::new(true))),
+        ..Control::default()
+    };
 
-        assert_eq!(parser(source, &control).unwrap_err(), ParseError::Cancelled);
+    assert_eq!(
+        parse_with(source, &control).unwrap_err(),
+        ParseError::Cancelled
+    );
 
-        assert_eq!(
-            tree.update_with(Span { start: 0, end: 0 }, b"", &control)
-                .unwrap_err(),
-            EditError::Parse(ParseError::Cancelled)
-        );
+    assert_eq!(
+        tree.update_with(Span { start: 0, end: 0 }, b"", &control)
+            .unwrap_err(),
+        EditError::Parse(ParseError::Cancelled)
+    );
 
-        assert_eq!(
-            tree.update_many_with(&[], &control).unwrap_err(),
-            EditError::Parse(ParseError::Cancelled)
-        );
-    }
+    assert_eq!(
+        tree.update_many_with(&[], &control).unwrap_err(),
+        EditError::Parse(ParseError::Cancelled)
+    );
 }
 
 #[test]

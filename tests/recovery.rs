@@ -1,11 +1,7 @@
-use vermis::{Expected, Kind, Parts, Span, TokenKind, Tree, View, parse, parse_luaux};
+use vermis::{Expected, Kind, Parts, Span, TokenKind, Tree, View, parse};
 
-fn check(source: &[u8], markup: bool) -> Tree {
-    let tree = if markup {
-        parse_luaux(source)
-    } else {
-        parse(source)
-    };
+fn check(source: &[u8]) -> Tree {
+    let tree = parse(source);
 
     let mut restored = Vec::new();
     let mut end = 0;
@@ -48,7 +44,7 @@ fn first(tree: &Tree, kind: Kind) -> View<'_> {
 
 #[test]
 fn incomplete_structure_stays_typed_and_lossless() {
-    let tree = check(b"local value =", false);
+    let tree = check(b"local value =");
     assert_ne!(tree.diagnostics(), []);
 
     let Parts::Local {
@@ -165,54 +161,7 @@ fn declarations() {
             ][..],
         ),
     ] {
-        let tree = check(source.as_bytes(), false);
-        assert!(!tree.diagnostics().is_empty(), "{source}");
-
-        for kind in kinds {
-            first(&tree, *kind);
-        }
-    }
-}
-
-#[test]
-fn markup() {
-    for (source, kinds) in [
-        ("return <Frame", &[Kind::Element, Kind::Opening][..]),
-        (
-            "return <",
-            &[Kind::Opening, Kind::MarkupName, Kind::Missing][..],
-        ),
-        (
-            "return <Frame Name=",
-            &[Kind::MarkupAttribute, Kind::Missing][..],
-        ),
-        (
-            "return <Frame = ",
-            &[Kind::MarkupInferred, Kind::Missing][..],
-        ),
-        (
-            "return <Frame>{",
-            &[Kind::MarkupExpression, Kind::Missing][..],
-        ),
-        (
-            "return <Frame>{first +",
-            &[Kind::MarkupExpression, Kind::Binary, Kind::Missing][..],
-        ),
-        (
-            "return <Frame>{function()",
-            &[Kind::MarkupExpression, Kind::Function, Kind::Parameters][..],
-        ),
-        (
-            "return <Frame><Child",
-            &[Kind::Element, Kind::Opening, Kind::MarkupChildren][..],
-        ),
-        (
-            "return <Frame Value='unfinished",
-            &[Kind::MarkupAttribute, Kind::String][..],
-        ),
-        ("return <Frame><!-- unfinished", &[Kind::MarkupComment][..]),
-    ] {
-        let tree = check(source.as_bytes(), true);
+        let tree = check(source.as_bytes());
         assert!(!tree.diagnostics().is_empty(), "{source}");
 
         for kind in kinds {
@@ -223,7 +172,7 @@ fn markup() {
 
 #[test]
 fn expressions() {
-    let tree = check(b"return f(first, second +", false);
+    let tree = check(b"return f(first, second +");
     assert_ne!(tree.diagnostics(), []);
 
     let Parts::Call { arguments, .. } = first(&tree, Kind::Call).parts().unwrap() else {
@@ -247,30 +196,30 @@ fn expressions() {
 
 #[test]
 fn boundaries() {
-    for (source, markup) in [
-        ("local value = f(first, second + 1)", false),
-        ("function f(first: number): number return first end", false),
-        ("type Value<T> = {first: T, callback: (T) -> T}", false),
-        ("return <Frame Name='name'>{value}<Child/></Frame>", true),
+    for source in [
+        "local value = f(first, second + 1)",
+        "function f(first: number): number return first end",
+        "type Value<T> = {first: T, callback: (T) -> T}",
+        "return {Name = 'name', value, {child}}",
     ] {
         assert!(
-            check(source.as_bytes(), markup).diagnostics().is_empty(),
+            check(source.as_bytes()).diagnostics().is_empty(),
             "{source}"
         );
 
         for end in 0..source.len() {
-            check(&source.as_bytes()[..end], markup);
+            check(&source.as_bytes()[..end]);
         }
     }
 
     for byte in u8::MIN..=u8::MAX {
-        check(&[b'l', byte], false);
-        check(&[b'<', byte], true);
-        check(&[b'<', b'F', b'>', b'{', byte], true);
+        check(&[b'l', byte]);
+        check(&[b'<', byte]);
+        check(&[b'{', b'F', b'=', b'{', byte]);
     }
 
     let deep = format!("return {}value{}", "(".repeat(1000), ")".repeat(1000));
-    assert_ne!(check(deep.as_bytes(), false).diagnostics(), []);
+    assert_ne!(check(deep.as_bytes()).diagnostics(), []);
 }
 
 #[test]
@@ -292,7 +241,7 @@ fn updated_block_end_context_matches_full_parse() {
                 .unwrap();
 
             let edited = source.replacen('2', "", 1);
-            let reparsed = check(edited.as_bytes(), false);
+            let reparsed = check(edited.as_bytes());
             assert_eq!(updated.diagnostics(), reparsed.diagnostics(), "{source}");
 
             assert_eq!(
@@ -324,92 +273,86 @@ fn updated_block_end_context_matches_full_parse() {
         )
         .unwrap();
 
-    let reparsed = check(b"local first =\nlocal second = 3\nreturn second", false);
+    let reparsed = check(b"local first =\nlocal second = 3\nreturn second");
     assert_eq!(updated.diagnostics(), reparsed.diagnostics());
 }
 
 #[test]
 fn recovery_loops_make_progress() {
-    for markup in [false, true] {
-        for source in [b"f'\\256'".as_slice(), b"f'\\xgg'".as_slice()] {
-            let tree = check(source, markup);
-            assert_ne!(tree.diagnostics(), []);
-
-            let Parts::Call { arguments, .. } = first(&tree, Kind::Call).parts().unwrap() else {
-                panic!("missing call view");
-            };
-
-            let Parts::Arguments { mut values } = arguments.parts().unwrap() else {
-                panic!("missing arguments view");
-            };
-
-            let value = values.next().unwrap();
-            assert_eq!(value.kind(), Kind::String);
-            assert_eq!(value.text(), &source[1..]);
-            assert!(values.next().is_none());
-        }
-
-        let tree = check(b"local value = 0x\nlocal next = 1", markup);
+    for source in [b"f'\\256'".as_slice(), b"f'\\xgg'".as_slice()] {
+        let tree = check(source);
         assert_ne!(tree.diagnostics(), []);
 
-        let Parts::Local { mut values, .. } = first(&tree, Kind::Local).parts().unwrap() else {
-            panic!("missing local view");
+        let Parts::Call { arguments, .. } = first(&tree, Kind::Call).parts().unwrap() else {
+            panic!("missing call view");
         };
 
-        assert_eq!(values.next().unwrap().kind(), Kind::Number);
-        assert_eq!(tree.root().children().next().unwrap().children().count(), 2);
-
-        let tree = check(b"type Value = '\\256'\nlocal next = 1", markup);
-        assert_ne!(tree.diagnostics(), []);
-
-        let Parts::TypeAlias { annotation, .. } = first(&tree, Kind::TypeAlias).parts().unwrap()
-        else {
-            panic!("missing alias view");
+        let Parts::Arguments { mut values } = arguments.parts().unwrap() else {
+            panic!("missing arguments view");
         };
 
-        assert_eq!(annotation.kind(), Kind::String);
-        first(&tree, Kind::Local);
-
-        let tree = check(
-            b"declare extern type Box with field: '\\256' next: number end",
-            markup,
-        );
-
-        assert_ne!(tree.diagnostics(), []);
-
-        assert_eq!(
-            tree.root()
-                .descendants()
-                .filter(|node| node.kind() == Kind::TypeField)
-                .count(),
-            2
-        );
-
-        for source in [
-            b"declare extern type Box with ) end".as_slice(),
-            b"class Box public ) end".as_slice(),
-        ] {
-            let tree = check(source, markup);
-            assert_ne!(tree.diagnostics(), []);
-            first(&tree, Kind::Class);
-        }
-
-        let source = format!("return {}f{{}}{}", "(".repeat(254), ")".repeat(254));
-        let tree = check(source.as_bytes(), markup);
-
-        assert!(
-            tree.diagnostics()
-                .iter()
-                .any(|diagnostic| diagnostic.message == "syntax nesting limit exceeded")
-        );
-
-        first(&tree, Kind::Call);
+        let value = values.next().unwrap();
+        assert_eq!(value.kind(), Kind::String);
+        assert_eq!(value.text(), &source[1..]);
+        assert!(values.next().is_none());
     }
+
+    let tree = check(b"local value = 0x\nlocal next = 1");
+    assert_ne!(tree.diagnostics(), []);
+
+    let Parts::Local { mut values, .. } = first(&tree, Kind::Local).parts().unwrap() else {
+        panic!("missing local view");
+    };
+
+    assert_eq!(values.next().unwrap().kind(), Kind::Number);
+    assert_eq!(tree.root().children().next().unwrap().children().count(), 2);
+
+    let tree = check(b"type Value = '\\256'\nlocal next = 1");
+    assert_ne!(tree.diagnostics(), []);
+
+    let Parts::TypeAlias { annotation, .. } = first(&tree, Kind::TypeAlias).parts().unwrap() else {
+        panic!("missing alias view");
+    };
+
+    assert_eq!(annotation.kind(), Kind::String);
+    first(&tree, Kind::Local);
+
+    let tree = check(b"declare extern type Box with field: '\\256' next: number end");
+
+    assert_ne!(tree.diagnostics(), []);
+
+    assert_eq!(
+        tree.root()
+            .descendants()
+            .filter(|node| node.kind() == Kind::TypeField)
+            .count(),
+        2
+    );
+
+    for source in [
+        b"declare extern type Box with ) end".as_slice(),
+        b"class Box public ) end".as_slice(),
+    ] {
+        let tree = check(source);
+        assert_ne!(tree.diagnostics(), []);
+        first(&tree, Kind::Class);
+    }
+
+    let source = format!("return {}f{{}}{}", "(".repeat(254), ")".repeat(254));
+    let tree = check(source.as_bytes());
+
+    assert!(
+        tree.diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.message == "syntax nesting limit exceeded")
+    );
+
+    first(&tree, Kind::Call);
 }
 
 #[test]
 fn missing_roles_and_punctuation_remain_owned_and_zero_width() {
-    let tree = check(b"local value =\nreturn (item", false);
+    let tree = check(b"local value =\nreturn (item");
     let missing = first(&tree, Kind::Missing);
 
     assert!(
@@ -437,10 +380,10 @@ fn missing_roles_and_punctuation_remain_owned_and_zero_width() {
         }
     }
 
-    let markup = check(b"return <Frame Value={item", true);
+    let table = check(b"return {Value = item");
 
     assert!(
-        markup
+        table
             .root()
             .descendants()
             .flat_map(View::recovery)
@@ -451,7 +394,7 @@ fn missing_roles_and_punctuation_remain_owned_and_zero_width() {
 #[test]
 fn partially_consumed_depth_recovery_preserves_lossless_missing_nodes() {
     let source = format!("return {}if elseif{}", "(".repeat(254), ")".repeat(254));
-    let tree = check(source.as_bytes(), false);
+    let tree = check(source.as_bytes());
 
     assert!(
         tree.diagnostics()

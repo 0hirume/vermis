@@ -1,4 +1,4 @@
-use vermis::{Element, Kind, Parts, Span, Token, TokenKind, Tree, View, parse, parse_luaux};
+use vermis::{Element, Kind, Span, Token, TokenKind, Tree, View, parse};
 
 fn coverage(tree: &Tree) {
     let root = tree.root();
@@ -122,7 +122,7 @@ fn snapshots() {
     let original = b"local value = 1\nreturn value";
     let mut source = original.to_vec();
     let tree = parse(&source);
-    let independent = parse_luaux(&source);
+    let independent = parse(&source);
     source.fill(0);
     drop(source);
 
@@ -341,63 +341,11 @@ fn ranges() {
 }
 
 #[test]
-fn markup() {
-    let source = b"return <Frame Enabled>{value}<><Button/><!-- note -->\n raw \xff\0</></Frame>";
-    let tree = parse_luaux(source);
-    assert!(tree.diagnostics().is_empty(), "{:?}", tree.diagnostics());
-    coverage(&tree);
-
-    let element = tree
-        .root()
-        .descendants()
-        .find(|view| view.kind() == Kind::Element)
-        .unwrap();
-
-    let Parts::Markup {
-        opening,
-        children,
-        closing,
-    } = element.parts().unwrap()
-    else {
-        panic!();
-    };
-
-    assert_eq!(opening.parent(), Some(element));
-    assert_eq!(children.unwrap().parent(), Some(element));
-    assert_eq!(closing.unwrap().text(), b"</Frame>");
-
-    let fragment = element
-        .descendants()
-        .find(|view| view.kind() == Kind::Fragment)
-        .unwrap();
-
-    assert!(fragment.ancestors().any(|view| view == element));
-    assert_eq!(fragment.ancestors().last(), Some(tree.root()));
-
-    assert!(
-        fragment
-            .tokens()
-            .all(|token| token.kind() != TokenKind::Eof)
-    );
-
-    assert!(
-        tree.tokens()
-            .any(|token| token.kind() == TokenKind::MarkupComment
-                && token.text() == b"<!-- note -->")
-    );
-
-    assert!(
-        tree.tokens()
-            .any(|token| token.kind() == TokenKind::MarkupText && token.text() == b"\n raw \xff\0")
-    );
-}
-
-#[test]
 fn recovery() {
     for tree in [
         parse(b"local broken = '\xff\nlocal valid = 1\nreturn valid"),
         parse(b"\0\xff\xfe\nlocal valid = 1\nreturn valid"),
-        parse_luaux(b"local broken = <Frame ?\nlocal valid = 1\nreturn valid"),
+        parse(b"local broken = ?\nlocal valid = 1\nreturn valid"),
     ] {
         assert_ne!(tree.diagnostics(), []);
         coverage(&tree);
@@ -417,7 +365,7 @@ fn recovery() {
 
     for tree in [
         parse(b"function unfinished()"),
-        parse_luaux(b"return <Frame>{function()"),
+        parse(b"return {function()"),
         parse(b"\xf0\x9f"),
     ] {
         assert_ne!(tree.diagnostics(), []);

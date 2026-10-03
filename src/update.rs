@@ -235,7 +235,7 @@ impl Tree {
                 )?
                 && let Some(root) = self.replace_path_edit(&path, syntax, range, replacement.len())
             {
-                let tree = Self::from_syntax(source, root, self.markup);
+                let tree = Self::from_syntax(source, root);
                 tree.validate_limits(control, execution)?;
 
                 return Ok(tree);
@@ -456,22 +456,11 @@ impl Tree {
                 end: finish,
             });
 
-            let builder = parser::controlled_unit_in(
-                slice.bytes(),
-                self.markup,
-                &boundary.context,
-                execution,
-            )?;
+            let builder = parser::controlled_unit_in(slice.bytes(), &boundary.context, execution)?;
 
             let reuse = Reuse::new(self, candidate.start, range, replacement, execution);
 
-            let temporary = Self::freeze(
-                builder,
-                slice.clone(),
-                self.markup,
-                Some(&reuse),
-                Some(execution),
-            )?;
+            let temporary = Self::freeze(builder, slice.clone(), Some(&reuse), Some(execution))?;
 
             let new = temporary.syntax();
 
@@ -529,13 +518,6 @@ impl Tree {
 
         let (previous, leaf) = self.token(index).expect("preceding token exists");
 
-        if !matches!(
-            leaf.checkpoint.state.mode,
-            crate::lexer::Mode::Code | crate::lexer::Mode::MarkupHole
-        ) {
-            return Ok(true);
-        }
-
         let input = source.slice(Span {
             start: previous.span.start,
             end: finish,
@@ -571,17 +553,10 @@ impl Tree {
         replacement: usize,
         execution: &Arc<Execution>,
     ) -> Result<Self, EditError> {
-        let builder = parser::controlled_in(source.bytes(), self.markup, execution)?;
+        let builder = parser::controlled_in(source.bytes(), execution)?;
         let reuse = Reuse::new(self, 0, range, replacement, execution);
 
-        Self::freeze(
-            builder,
-            source.clone(),
-            self.markup,
-            Some(&reuse),
-            Some(execution),
-        )
-        .map_err(Into::into)
+        Self::freeze(builder, source.clone(), Some(&reuse), Some(execution)).map_err(Into::into)
     }
 }
 

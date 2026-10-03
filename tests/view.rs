@@ -1,4 +1,4 @@
-use vermis::{Kind, Parts, Tree, View, parse, parse_luaux};
+use vermis::{Kind, Parts, Tree, View, parse};
 
 fn check(source: &[u8]) -> Tree {
     let tree = parse(source);
@@ -40,98 +40,6 @@ fn first(tree: &Tree, kind: Kind) -> View<'_> {
         .descendants()
         .find(|node| node.kind() == kind)
         .unwrap()
-}
-
-#[test]
-fn markup_views() {
-    let tree = parse_luaux(b"return <Components.Frame Enabled Text='literal' Size={size} {props} ={props.Name}>before<>{child + offset}<Button/><!-- note -->{--[[ note ]]}</>after</Components.Frame>");
-    assert!(tree.diagnostics().is_empty(), "{:?}", tree.diagnostics());
-
-    for kind in [
-        Kind::Element,
-        Kind::Fragment,
-        Kind::Opening,
-        Kind::Closing,
-        Kind::MarkupName,
-        Kind::MarkupAttributes,
-        Kind::MarkupAttribute,
-        Kind::MarkupSpread,
-        Kind::MarkupInferred,
-        Kind::MarkupChildren,
-        Kind::MarkupExpression,
-        Kind::MarkupText,
-        Kind::MarkupComment,
-    ] {
-        assert!(first(&tree, kind).parts().is_some(), "{kind:?}");
-    }
-
-    let element = first(&tree, Kind::Element);
-
-    let Parts::Markup {
-        opening,
-        children,
-        closing,
-    } = element.parts().unwrap()
-    else {
-        panic!()
-    };
-
-    assert!(children.is_some());
-    assert_eq!(closing.unwrap().text(), b"</Components.Frame>");
-
-    let Parts::Tag { name, attributes } = opening.parts().unwrap() else {
-        panic!()
-    };
-
-    let Parts::MarkupName { segments } = name.unwrap().parts().unwrap() else {
-        panic!()
-    };
-
-    assert_eq!(
-        segments.map(View::text).collect::<Vec<_>>(),
-        [b"Components".as_slice(), b"Frame".as_slice()]
-    );
-
-    let Parts::MarkupAttributes { mut attributes } = attributes.unwrap().parts().unwrap() else {
-        panic!()
-    };
-
-    let Parts::MarkupAttribute { name, value } = attributes.next().unwrap().parts().unwrap() else {
-        panic!()
-    };
-
-    assert_eq!(name.text(), b"Enabled");
-    assert!(value.is_none());
-
-    let Parts::MarkupAttribute { value, .. } = attributes.next().unwrap().parts().unwrap() else {
-        panic!()
-    };
-
-    assert_eq!(value.unwrap().text(), b"'literal'");
-
-    let Parts::MarkupExpression { expression } =
-        first(&tree, Kind::MarkupExpression).parts().unwrap()
-    else {
-        panic!()
-    };
-
-    assert_eq!(expression.kind(), Kind::Name);
-
-    let button = tree
-        .root()
-        .descendants()
-        .find(|node| node.kind() == Kind::Element && node.text() == b"<Button/>")
-        .unwrap();
-
-    let Parts::Markup {
-        children, closing, ..
-    } = button.parts().unwrap()
-    else {
-        panic!()
-    };
-
-    assert!(children.is_none());
-    assert!(closing.is_none());
 }
 
 #[test]

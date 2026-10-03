@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use vermis::{Element, Span, TokenKind, Tree, parse, parse_luaux};
+use vermis::{Element, Span, TokenKind, Tree, parse};
 
 fn validate(tree: &Tree, source: &[u8]) {
     let root = tree.root();
@@ -179,37 +179,43 @@ fn fingerprint(tree: &Tree) -> String {
 }
 
 fuzz_target!(|source: &[u8]| {
-    for parser in [parse, parse_luaux] {
-        let mut tree = parser(source);
-        validate(&tree, source);
-        if source.len() > 256 {
-            continue;
-        }
+    let mut tree = parse(source);
+    validate(&tree, source);
 
-        let replacements: &[&[u8]] = &[b"", b" ", b"'", b"--[[", b"x", b"<A/>", b"}", b"end"];
-        let mut edited = source.to_vec();
-        for step in 0..4 {
-            let choice = usize::from(source.get(step * 3).copied().unwrap_or(0));
-            let start =
-                usize::from(source.get(step * 3 + 1).copied().unwrap_or(0)) % (edited.len() + 1);
-            let width = usize::from(source.get(step * 3 + 2).copied().unwrap_or(0)) % 5;
-            let end = edited.len().min(start + width);
-            let replacement = if choice % 2 == 0 {
-                replacements[(choice / 2) % replacements.len()]
-            } else {
-                &source[..source.len().min(4)]
-            };
-            let previous = fingerprint(&tree);
-            let updated = tree.update(Span { start, end }, replacement).unwrap();
-            assert_eq!(fingerprint(&tree), previous);
-            edited
-                .splice(start..end, replacement.iter().copied())
-                .for_each(drop);
-            validate(&updated, &edited);
-            let fresh = parser(&edited);
-            validate(&fresh, &edited);
-            assert_eq!(fingerprint(&updated), fingerprint(&fresh));
-            tree = updated;
-        }
+    if source.len() > 256 {
+        return;
+    }
+
+    let replacements: &[&[u8]] = &[b"", b" ", b"'", b"--[[", b"x", b"<", b"}", b"end"];
+    let mut edited = source.to_vec();
+
+    for step in 0..4 {
+        let choice = usize::from(source.get(step * 3).copied().unwrap_or(0));
+
+        let start =
+            usize::from(source.get(step * 3 + 1).copied().unwrap_or(0)) % (edited.len() + 1);
+
+        let width = usize::from(source.get(step * 3 + 2).copied().unwrap_or(0)) % 5;
+        let end = edited.len().min(start + width);
+
+        let replacement = if choice % 2 == 0 {
+            replacements[(choice / 2) % replacements.len()]
+        } else {
+            &source[..source.len().min(4)]
+        };
+
+        let previous = fingerprint(&tree);
+        let updated = tree.update(Span { start, end }, replacement).unwrap();
+        assert_eq!(fingerprint(&tree), previous);
+
+        edited
+            .splice(start..end, replacement.iter().copied())
+            .for_each(drop);
+
+        validate(&updated, &edited);
+        let fresh = parse(&edited);
+        validate(&fresh, &edited);
+        assert_eq!(fingerprint(&updated), fingerprint(&fresh));
+        tree = updated;
     }
 });

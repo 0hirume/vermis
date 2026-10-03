@@ -1,7 +1,7 @@
 use super::context::{Expected, Rule};
 use super::{Diagnostic, Keyword, Kind, Operator, Parsed, Parser, TokenKind};
 
-impl<const MARKUP: bool> Parser<'_, MARKUP> {
+impl Parser<'_> {
     pub(super) fn statement(&mut self) -> Parsed {
         self.scoped(Rule::Statement, Self::statement_contents)
     }

@@ -103,20 +103,6 @@ pub enum Kind {
     TypeIntersection,
     TypeOptional,
     TypeOf,
-
-    Element,
-    Fragment,
-    Opening,
-    Closing,
-    MarkupName,
-    MarkupAttributes,
-    MarkupAttribute,
-    MarkupSpread,
-    MarkupInferred,
-    MarkupChildren,
-    MarkupExpression,
-    MarkupText,
-    MarkupComment,
 }
 
 #[derive(Clone, Debug)]
@@ -935,12 +921,11 @@ pub struct Tree {
     pub(crate) syntax: Arc<Node>,
     pub(crate) tokens: Sequence<Arc<Leaf>>,
     pub(crate) diagnostics_cache: OnceLock<Vec<Diagnostic>>,
-    pub(crate) markup: bool,
 }
 
 impl Clone for Tree {
     fn clone(&self) -> Self {
-        Self::from_syntax(self.source.clone(), Arc::clone(&self.syntax), self.markup)
+        Self::from_syntax(self.source.clone(), Arc::clone(&self.syntax))
     }
 }
 
@@ -1203,14 +1188,13 @@ impl Tree {
         ))
     }
 
-    pub(crate) fn from_builder(builder: Builder<'_>, source: Source, markup: bool) -> Self {
-        Self::freeze(builder, source, markup, None, None).expect("unrestricted parse completed")
+    pub(crate) fn from_builder(builder: Builder<'_>, source: Source) -> Self {
+        Self::freeze(builder, source, None, None).expect("unrestricted parse completed")
     }
 
     pub(crate) fn freeze(
         builder: Builder<'_>,
         source: Source,
-        markup: bool,
         reuse: Option<&Reuse<'_>>,
         execution: Option<&Execution>,
     ) -> Result<Self, ParseError> {
@@ -1320,20 +1304,15 @@ impl Tree {
 
         poll(execution)?;
 
-        Ok(Self::from_syntax(
-            source,
-            Arc::clone(&syntax[builder.root]),
-            markup,
-        ))
+        Ok(Self::from_syntax(source, Arc::clone(&syntax[builder.root])))
     }
 
-    pub(crate) fn from_syntax(source: Source, syntax: Arc<Node>, markup: bool) -> Self {
+    pub(crate) fn from_syntax(source: Source, syntax: Arc<Node>) -> Self {
         Self {
             source,
             tokens: syntax.tokens.clone(),
             syntax,
             diagnostics_cache: OnceLock::new(),
-            markup,
         }
     }
 }
@@ -1522,7 +1501,7 @@ mod tests {
             .collect(),
         );
 
-        let tree = Tree::from_syntax(Source::from(b"".as_slice()), root, false);
+        let tree = Tree::from_syntax(Source::from(b"".as_slice()), root);
         let block = tree.root().children().next().unwrap();
         let first = block.children().next().unwrap();
         let second = block.children().next_back().unwrap();
@@ -1553,7 +1532,7 @@ mod tests {
             .replace_path_edit(&tree.path(second.index), replacement, first.span(), 0)
             .unwrap();
 
-        let changed = Tree::from_syntax(tree.source.clone(), replaced, false);
+        let changed = Tree::from_syntax(tree.source.clone(), replaced);
 
         assert_eq!(
             changed
@@ -1583,7 +1562,6 @@ mod tests {
             Boundary {
                 context: Context {
                     rule: Rule::Expression(0),
-                    markup: false,
                     depth: 0,
                     previous: None,
                     lexical: State::default(),
@@ -1671,7 +1649,7 @@ mod tests {
                 .is_none()
         );
 
-        let tree = Tree::from_syntax(Source::from(b"   abXXcdef".as_slice()), parent, false);
+        let tree = Tree::from_syntax(Source::from(b"   abXXcdef".as_slice()), parent);
         assert!(tree.diagnostics_cache.get().is_none());
 
         assert_eq!(
@@ -1792,7 +1770,6 @@ mod tests {
             Boundary {
                 context: Context {
                     rule: Rule::Expression(0),
-                    markup: false,
                     depth: 0,
                     previous: None,
                     lexical: State::default(),
@@ -1904,7 +1881,7 @@ mod tests {
         );
 
         let source = vec![b'x'; 4096];
-        let tree = Tree::from_syntax(Source::from(source.as_slice()), root, false);
+        let tree = Tree::from_syntax(Source::from(source.as_slice()), root);
         let mut visited = HashMap::new();
 
         let found = tree
@@ -1956,7 +1933,7 @@ mod tests {
 
     #[test]
     fn cached_lexical_equality_preserves_token_comparisons() {
-        use crate::lexer::{Brace, Braces, Mode};
+        use crate::lexer::{Brace, Braces};
         use crate::parser::context::Rule;
 
         fn contextual(source: &[u8], state: State) -> Arc<Node> {
@@ -1979,7 +1956,6 @@ mod tests {
                 Boundary {
                     context: Context {
                         rule: Rule::Expression(0),
-                        markup: false,
                         depth: 0,
                         previous: None,
                         lexical: state.clone(),
@@ -2004,12 +1980,10 @@ mod tests {
 
         let first = State {
             braces: Braces::from([Brace::Normal; 32]),
-            mode: Mode::Code,
         };
 
         let second = State {
             braces: Braces::from([Brace::Normal; 32]),
-            mode: Mode::Code,
         };
 
         let left = contextual(b"x", first);
@@ -2035,7 +2009,7 @@ mod tests {
             syntax = Node::new(Kind::Group, Sequence::singleton(Syntax::Node(syntax)));
         }
 
-        let tree = Tree::from_syntax(Source::from(b"x".as_slice()), syntax, false);
+        let tree = Tree::from_syntax(Source::from(b"x".as_slice()), syntax);
         assert_eq!(tree.root().descendants().count(), 20001);
         assert_eq!(tree.occurrences().count(), 20001);
         assert_eq!(tree.root().descendants().last().unwrap().text(), b"x");
@@ -2056,14 +2030,13 @@ mod tests {
         });
 
         let source = b"local value = 1";
-        let builder = crate::parser::controlled_in(source, false, &execution).unwrap();
+        let builder = crate::parser::controlled_in(source, &execution).unwrap();
         cancellation.store(true, Ordering::Relaxed);
 
         assert_eq!(
             Tree::freeze(
                 builder,
                 Source::from(source.as_slice()),
-                false,
                 None,
                 Some(&execution)
             )
@@ -2076,28 +2049,19 @@ mod tests {
     fn frozen_diagnostics_preserve_parser_emission_order() {
         use crate::parser::control::Control;
 
-        for markup in [false, true] {
-            for source in [
-                b"if const value =</A>f//nd".as_slice(),
-                b"if x local a = <bad end",
-                b"local function f(value: ) local x = <bad",
-                b"class C function f(value: ) local x = <bad end",
-            ] {
-                let execution = Execution::new(&Control::default());
-                let builder = crate::parser::controlled_in(source, markup, &execution).unwrap();
-                let expected = builder.diagnostics.clone();
+        for source in [
+            b"if const value = f//nd".as_slice(),
+            b"if x local a = end",
+            b"local function f(value: ) local x =",
+            b"class C function f(value: ) local x = end",
+        ] {
+            let execution = Execution::new(&Control::default());
+            let builder = crate::parser::controlled_in(source, &execution).unwrap();
+            let expected = builder.diagnostics.clone();
 
-                let tree = Tree::freeze(
-                    builder,
-                    Source::from(source),
-                    markup,
-                    None,
-                    Some(&execution),
-                )
-                .unwrap();
+            let tree = Tree::freeze(builder, Source::from(source), None, Some(&execution)).unwrap();
 
-                assert_eq!(tree.diagnostics(), expected, "{source:?}, {markup}");
-            }
+            assert_eq!(tree.diagnostics(), expected, "{source:?}");
         }
     }
 }

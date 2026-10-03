@@ -142,12 +142,6 @@ impl Execution {
         )
     }
 
-    pub(crate) fn discard_tokens(&self, count: usize) {
-        if self.poll() {
-            self.tokens.fetch_sub(count, Ordering::Relaxed);
-        }
-    }
-
     pub(crate) fn snapshot(&self) -> Ledger {
         Ledger {
             tokens: self.tokens.load(Ordering::Relaxed),
@@ -167,8 +161,6 @@ impl Execution {
     pub(crate) fn retain(
         &self,
         ledger: Ledger,
-        tokens_before: usize,
-        tokens_after: usize,
         diagnostics_before: usize,
         diagnostics_after: usize,
     ) {
@@ -176,21 +168,14 @@ impl Execution {
             return;
         }
 
-        let tokens = ledger
-            .tokens
-            .checked_sub(tokens_before)
-            .and_then(|count| count.checked_add(tokens_after));
-
         let diagnostics = ledger
             .diagnostics
             .checked_sub(diagnostics_before)
             .and_then(|count| count.checked_add(diagnostics_after));
 
-        if self.check(tokens, self.limits.tokens, Resource::Tokens)
-            && self.check(diagnostics, self.limits.diagnostics, Resource::Diagnostics)
-        {
+        if self.check(diagnostics, self.limits.diagnostics, Resource::Diagnostics) {
             self.restore(Ledger {
-                tokens: tokens.expect("checked tokens"),
+                tokens: ledger.tokens,
                 nodes: ledger.nodes,
                 diagnostics: diagnostics.expect("checked diagnostics"),
             });

@@ -1,4 +1,4 @@
-use vermis::{Diagnostic, DiagnosticCode, Edit, Severity, Span, Tree, parse, parse_luaux};
+use vermis::{Diagnostic, DiagnosticCode, Edit, Severity, Span, Tree, parse};
 
 fn messages(tree: &Tree) -> Vec<&'static str> {
     tree.diagnostics()
@@ -7,7 +7,7 @@ fn messages(tree: &Tree) -> Vec<&'static str> {
         .collect()
 }
 
-fn replace(tree: &Tree, needle: &[u8], replacement: &[u8], parser: fn(&[u8]) -> Tree) -> Tree {
+fn replace(tree: &Tree, needle: &[u8], replacement: &[u8]) -> Tree {
     let start = tree
         .source()
         .windows(needle.len())
@@ -28,23 +28,20 @@ fn replace(tree: &Tree, needle: &[u8], replacement: &[u8], parser: fn(&[u8]) -> 
         .for_each(drop);
 
     assert_eq!(updated.source(), source);
-    assert_eq!(updated.diagnostics(), parser(&source).diagnostics());
+    assert_eq!(updated.diagnostics(), parse(&source).diagnostics());
     assert_eq!(tree.diagnostics(), old);
 
     updated
 }
 
 #[test]
-fn diagnostics_preserve_emission_order_instead_of_span_order() {
-    let source = b"local node = <First></Other";
-    let tree = parse_luaux(source);
+fn diagnostics_preserve_emission_order() {
+    let source = b"(node =";
+    let tree = parse(source);
 
     assert_eq!(
         messages(&tree),
-        [
-            "expected end of closing tag",
-            "closing tag does not match opening tag",
-        ]
+        ["expected closing expression", "invalid assignment target",]
     );
 
     let diagnostics = tree.diagnostics();
@@ -52,22 +49,19 @@ fn diagnostics_preserve_emission_order_instead_of_span_order() {
     assert_eq!(
         diagnostics[0].span,
         Span {
-            start: source.len(),
+            start: source.len() - 1,
             end: source.len()
         }
     );
-
-    let closing = source.windows(2).position(|bytes| bytes == b"</").unwrap();
 
     assert_eq!(
         diagnostics[1].span,
         Span {
-            start: closing,
+            start: source.len() - 1,
             end: source.len()
         }
     );
 
-    assert!(diagnostics[0].span.start > diagnostics[1].span.start);
     assert_eq!(diagnostics[0].code(), DiagnosticCode::ExpectedSyntax);
     assert_eq!(diagnostics[1].code(), DiagnosticCode::InvalidSyntax);
 
@@ -77,7 +71,7 @@ fn diagnostics_preserve_emission_order_instead_of_span_order() {
             .all(|diagnostic| diagnostic.severity() == Severity::Error)
     );
 
-    replace(&tree, b"node", b"longer_node", parse_luaux);
+    replace(&tree, b"node", b"longer_node");
 }
 
 #[test]
@@ -92,7 +86,7 @@ fn empty_child_slots_gain_diagnostics_at_their_original_chronological_position()
         ]
     );
 
-    let updated = replace(&original, b"return 1", b"return 0x", parse);
+    let updated = replace(&original, b"return 1", b"return 0x");
 
     assert_eq!(
         messages(&updated),
@@ -103,7 +97,7 @@ fn empty_child_slots_gain_diagnostics_at_their_original_chronological_position()
         ]
     );
 
-    let repaired = replace(&updated, b"return 0x", b"return 2", parse);
+    let repaired = replace(&updated, b"return 0x", b"return 2");
     assert_eq!(messages(&repaired), messages(&original));
 }
 
@@ -127,7 +121,7 @@ fn shifted_suffix_diagnostics_keep_their_owner_identity_and_old_snapshot() {
         .identity();
 
     let old = original.diagnostics().to_vec();
-    let updated = replace(&original, b"first = 1", b"first = 123456", parse);
+    let updated = replace(&original, b"first = 1", b"first = 123456");
 
     let shifted = updated
         .root()
@@ -155,12 +149,7 @@ fn shifted_suffix_diagnostics_keep_their_owner_identity_and_old_snapshot() {
 fn child_count_changes_reparse_owners_without_reordering_direct_records() {
     let original = parse(b"return 1\nlocal later = 0x\n");
 
-    let updated = replace(
-        &original,
-        b"return 1",
-        b"return 1\nlocal middle = 0x",
-        parse,
-    );
+    let updated = replace(&original, b"return 1", b"return 1\nlocal middle = 0x");
 
     assert_eq!(
         messages(&updated),
@@ -171,14 +160,12 @@ fn child_count_changes_reparse_owners_without_reordering_direct_records() {
         ]
     );
 
-    replace(&updated, b"\nlocal middle = 0x", b"", parse);
+    replace(&updated, b"\nlocal middle = 0x", b"");
 }
 
 #[test]
 fn batches_preserve_chronology_and_repair_only_edited_diagnostics() {
-    let original = parse_luaux(
-        b"local first = 1\nlocal broken = 0x\nlocal escaped = '\\256'\nlocal node = <First></Other",
-    );
+    let original = parse(b"local first = 1\nlocal broken = 0x\nlocal escaped = '\\256'\n(node =");
 
     let old = original.diagnostics().to_vec();
 
@@ -187,8 +174,8 @@ fn batches_preserve_chronology_and_repair_only_edited_diagnostics() {
         [
             "malformed number",
             "malformed string escape",
-            "expected end of closing tag",
-            "closing tag does not match opening tag",
+            "expected closing expression",
+            "invalid assignment target",
         ]
     );
 
@@ -198,19 +185,19 @@ fn batches_preserve_chronology_and_repair_only_edited_diagnostics() {
         .position(|bytes| bytes == b"1")
         .unwrap();
 
-    let closing = original
+    let assignment = original
         .source()
-        .windows(5)
-        .position(|bytes| bytes == b"Other")
+        .windows(7)
+        .position(|bytes| bytes == b"(node =")
         .unwrap();
 
     let edits = [
         Edit {
             range: Span {
-                start: closing,
-                end: closing + 5,
+                start: assignment,
+                end: assignment + 7,
             },
-            replacement: b"First>".to_vec(),
+            replacement: b"node = 1".to_vec(),
         },
         Edit {
             range: Span {
@@ -225,7 +212,7 @@ fn batches_preserve_chronology_and_repair_only_edited_diagnostics() {
 
     assert_eq!(
         updated.source(),
-        b"local first = 123456\nlocal broken = 0x\nlocal escaped = '\\256'\nlocal node = <First></First>"
+        b"local first = 123456\nlocal broken = 0x\nlocal escaped = '\\256'\nnode = 1"
     );
 
     assert_eq!(
@@ -242,16 +229,13 @@ fn batches_preserve_chronology_and_repair_only_edited_diagnostics() {
         ]
     );
 
-    assert_eq!(
-        updated.diagnostics(),
-        parse_luaux(updated.source()).diagnostics()
-    );
+    assert_eq!(updated.diagnostics(), parse(updated.source()).diagnostics());
 
     assert_eq!(original.diagnostics(), old);
 
     assert_eq!(
         original.source(),
-        b"local first = 1\nlocal broken = 0x\nlocal escaped = '\\256'\nlocal node = <First></Other"
+        b"local first = 1\nlocal broken = 0x\nlocal escaped = '\\256'\n(node ="
     );
 }
 
@@ -267,35 +251,29 @@ fn zero_width_records_shift_and_disappear_when_their_owner_is_repaired() {
             .any(|diagnostic| diagnostic.span.is_empty())
     );
 
-    let shifted = replace(&original, b"value", b"longer_value", parse);
-    let completed = replace(&shifted, b"=\n", b"= 1\n", parse);
-    let repaired = replace(&completed, b"(item", b"(item)", parse);
+    let shifted = replace(&original, b"value", b"longer_value");
+    let completed = replace(&shifted, b"=\n", b"= 1\n");
+    let repaired = replace(&completed, b"(item", b"(item)");
     assert_eq!(repaired.diagnostics(), []);
 }
 
 #[test]
 fn identical_messages_at_distinct_anchors_remain_independent() {
-    let original = parse_luaux(b"local node = <A><B></C></D>");
+    let original = parse(b"local first = 0x\nlocal second = 0x");
 
     assert_eq!(
         messages(&original),
-        [
-            "closing tag does not match opening tag",
-            "closing tag does not match opening tag",
-        ]
+        ["malformed number", "malformed number",]
     );
 
     let records = original.diagnostics();
     assert_eq!(records[0].span.len(), records[1].span.len());
     assert_ne!(records[0].span.start, records[1].span.start);
-    let repaired = replace(&original, b"</C>", b"</B>", parse_luaux);
+    let repaired = replace(&original, b"0x", b"10");
 
-    assert_eq!(
-        messages(&repaired),
-        ["closing tag does not match opening tag"]
-    );
+    assert_eq!(messages(&repaired), ["malformed number"]);
 
     assert_eq!(repaired.diagnostics()[0].span, records[1].span);
-    let completed = replace(&repaired, b"</D>", b"</A>", parse_luaux);
+    let completed = replace(&repaired, b"0x", b"20");
     assert_eq!(completed.diagnostics(), []);
 }

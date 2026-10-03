@@ -144,32 +144,14 @@ impl fmt::Debug for Braces {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Mode {
-    Code,
-    MarkupTag,
-    MarkupChildren,
-    MarkupHole,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct State {
     pub braces: Braces,
-    pub mode: Mode,
 }
 
 impl State {
     pub(crate) fn equivalent(&self, other: &Self, pairs: &mut HashSet<(usize, usize)>) -> bool {
-        self.mode == other.mode && self.braces.equivalent(&other.braces, pairs)
-    }
-}
-
-impl Default for State {
-    fn default() -> Self {
-        Self {
-            braces: Braces::default(),
-            mode: Mode::Code,
-        }
+        self.braces.equivalent(&other.braces, pairs)
     }
 }
 
@@ -188,12 +170,10 @@ impl Checkpoint {
     }
 }
 
-#[derive(Clone)]
 pub struct Lexer<'source> {
     source: &'source [u8],
     cursor: usize,
     braces: Braces,
-    mode: Mode,
     finished: bool,
     execution: Option<Arc<Execution>>,
 }
@@ -205,21 +185,14 @@ impl<'source> Lexer<'source> {
             source,
             cursor: 0,
             braces: Braces::default(),
-            mode: Mode::Code,
             finished: false,
             execution: None,
         }
     }
 
-    pub(crate) fn resume(&mut self, cursor: usize) {
-        self.cursor = cursor;
-        self.finished = false;
-    }
-
     pub(crate) fn state(&self) -> State {
         State {
             braces: self.braces.clone(),
-            mode: self.mode,
         }
     }
 
@@ -234,7 +207,6 @@ impl<'source> Lexer<'source> {
     pub(crate) fn restore(&mut self, checkpoint: &Checkpoint) {
         self.cursor = checkpoint.cursor;
         self.braces.clone_from(&checkpoint.state.braces);
-        self.mode = checkpoint.state.mode;
         self.finished = checkpoint.finished;
     }
 
@@ -948,19 +920,13 @@ mod tests {
 
         let old = Checkpoint {
             cursor: 7,
-            state: State {
-                braces: left,
-                mode: Mode::Code,
-            },
+            state: State { braces: left },
             finished: false,
         };
 
         let mut new = Checkpoint {
             cursor: 8,
-            state: State {
-                braces: right,
-                mode: Mode::Code,
-            },
+            state: State { braces: right },
             finished: false,
         };
 
@@ -969,9 +935,6 @@ mod tests {
         new.finished = true;
         assert!(!old.equivalent(&new, &mut pairs));
         new.finished = false;
-        new.state.mode = Mode::MarkupHole;
-        assert!(!old.equivalent(&new, &mut pairs));
-        new.state.mode = Mode::Code;
         assert!(old.equivalent(&new, &mut pairs));
 
         let left = Braces::from([Brace::Interpolated, Brace::Normal, Brace::Normal]);
