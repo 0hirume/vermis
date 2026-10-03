@@ -1,7 +1,9 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use vermis::{Element, Span, TokenKind, Tree, parse};
+use vermis::{
+    Diagnostic, Element, Expectation, Kind, Span, Token, TokenKind, TokenView, Tree, View, parse,
+};
 
 fn validate(tree: &Tree, source: &[u8]) {
     let root = tree.root();
@@ -124,58 +126,115 @@ fn validate(tree: &Tree, source: &[u8]) {
     }
 }
 
-fn fingerprint(tree: &Tree) -> String {
-    let nodes: Vec<_> = tree
+#[derive(Debug, PartialEq, Eq)]
+struct Snapshot {
+    nodes: Vec<NodeSnapshot>,
+    tokens: Vec<TokenSnapshot>,
+    lookups: [LookupSnapshot; 3],
+    diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct NodeSnapshot {
+    kind: Kind,
+    span: Span,
+    text: Vec<u8>,
+    parts: String,
+    recovery: Vec<Expectation>,
+    parent: Option<(Kind, Span)>,
+    previous_sibling: Option<(Kind, Span)>,
+    next_sibling: Option<(Kind, Span)>,
+    children: Vec<(Kind, Span)>,
+    elements: Vec<ElementSnapshot>,
+    tokens: Vec<Token>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct TokenSnapshot {
+    data: Token,
+    text: Vec<u8>,
+    parent: (Kind, Span),
+    previous: Option<Token>,
+    next: Option<Token>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ElementSnapshot {
+    Node((Kind, Span)),
+    Token(Token),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct LookupSnapshot {
+    token: Option<Token>,
+    node: Option<(Kind, Span)>,
+    covering: Option<(Kind, Span)>,
+}
+
+fn node_value(node: View<'_>) -> (Kind, Span) {
+    (node.kind(), node.span())
+}
+
+fn token_value(token: TokenView<'_>) -> Token {
+    Token {
+        kind: token.kind(),
+        span: token.span(),
+    }
+}
+
+fn snapshot(tree: &Tree) -> Snapshot {
+    let nodes = tree
         .root()
         .descendants()
-        .map(|node| {
-            (
-                node.kind(),
-                node.span(),
-                node.text(),
-                node.parts(),
-                node.recovery().collect::<Vec<_>>(),
-                node.parent(),
-                node.previous_sibling(),
-                node.next_sibling(),
-                node.children().collect::<Vec<_>>(),
-                node.elements().collect::<Vec<_>>(),
-                node.tokens().collect::<Vec<_>>(),
-            )
+        .map(|node| NodeSnapshot {
+            kind: node.kind(),
+            span: node.span(),
+            text: node.text().to_vec(),
+            parts: format!("{:?}", node.parts()),
+            recovery: node.recovery().collect(),
+            parent: node.parent().map(node_value),
+            previous_sibling: node.previous_sibling().map(node_value),
+            next_sibling: node.next_sibling().map(node_value),
+            children: node.children().map(node_value).collect(),
+            elements: node
+                .elements()
+                .map(|element| match element {
+                    Element::Node(child) => ElementSnapshot::Node(node_value(child)),
+                    Element::Token(token) => ElementSnapshot::Token(token_value(token)),
+                })
+                .collect(),
+            tokens: node.tokens().map(token_value).collect(),
         })
         .collect();
 
-    let tokens: Vec<_> = tree
+    let tokens = tree
         .tokens()
-        .map(|token| {
-            (
-                token.data(),
-                token.text(),
-                token.parent(),
-                token.previous(),
-                token.next(),
-            )
+        .map(|token| TokenSnapshot {
+            data: token.data(),
+            text: token.text().to_vec(),
+            parent: node_value(token.parent()),
+            previous: token.previous().map(token_value),
+            next: token.next().map(token_value),
         })
         .collect();
 
-    let lookups: Vec<_> = [0, tree.source().len() / 2, tree.source().len()]
-        .into_iter()
-        .map(|offset| {
-            (
-                tree.token_at(offset),
-                tree.node_at(offset),
-                tree.covering(Span {
-                    start: offset,
-                    end: offset,
-                }),
-            )
-        })
-        .collect();
+    let lookups = [0, tree.source().len() / 2, tree.source().len()].map(|offset| LookupSnapshot {
+        token: tree.token_at(offset).map(token_value),
+        node: tree.node_at(offset).map(node_value),
+        covering: tree
+            .covering(Span {
+                start: offset,
+                end: offset,
+            })
+            .map(node_value),
+    });
 
-    format!(
-        "{nodes:?}\n{tokens:?}\n{lookups:?}\n{:?}",
-        tree.diagnostics()
-    )
+    Snapshot {
+        nodes,
+        tokens,
+        lookups,
+        diagnostics: tree.diagnostics().to_vec(),
+    }
 }
 
 fuzz_target!(|source: &[u8]| {
@@ -204,9 +263,9 @@ fuzz_target!(|source: &[u8]| {
             &source[..source.len().min(4)]
         };
 
-        let previous = fingerprint(&tree);
+        let previous = snapshot(&tree);
         let updated = tree.update(Span { start, end }, replacement).unwrap();
-        assert_eq!(fingerprint(&tree), previous);
+        assert_eq!(snapshot(&tree), previous);
 
         edited
             .splice(start..end, replacement.iter().copied())
@@ -215,7 +274,7 @@ fuzz_target!(|source: &[u8]| {
         validate(&updated, &edited);
         let fresh = parse(&edited);
         validate(&fresh, &edited);
-        assert_eq!(fingerprint(&updated), fingerprint(&fresh));
+        assert_eq!(snapshot(&updated), snapshot(&fresh));
         tree = updated;
     }
 });
