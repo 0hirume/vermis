@@ -303,6 +303,29 @@ fn partially_consumed_depth_recovery_preserves_lossless_missing_nodes() {
 }
 
 #[test]
+fn nested_syntax_stays_within_stack_budget() {
+    for depth in [96, 160, 256, 512] {
+        for source in [
+            format!("return {}value{}", "(".repeat(depth), ")".repeat(depth)),
+            format!(
+                "type Value = {}number{}",
+                "(".repeat(depth),
+                ")".repeat(depth)
+            ),
+        ] {
+            let tree = check(source.as_bytes());
+
+            assert_eq!(
+                tree.diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message == "syntax nesting limit exceeded"),
+                depth > 96
+            );
+        }
+    }
+}
+
+#[test]
 fn failed_statements_are_not_reparsed() {
     let unit = "(@;";
     let diagnostics = check(unit.as_bytes()).diagnostics.len();

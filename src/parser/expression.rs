@@ -12,6 +12,10 @@ impl Parser<'_> {
 
     fn subexpression(&mut self, minimum: u8) -> NodeIndex {
         self.required("expression", |parser| {
+            if parser.depth >= 128 {
+                return Err(parser.error("syntax nesting limit exceeded"));
+            }
+
             parser.nested(|parser| parser.binary(minimum))
         })
     }

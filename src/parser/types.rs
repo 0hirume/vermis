@@ -20,6 +20,10 @@ impl Parser<'_> {
 
     fn annotation_context(&mut self, allow_pack: bool, declaration: bool) -> NodeIndex {
         self.required("annotation", |parser| {
+            if parser.depth >= 128 {
+                return Err(parser.error("syntax nesting limit exceeded"));
+            }
+
             parser.nested(|parser| {
                 if allow_pack && parser.at_pack() {
                     Ok(parser.pack())
