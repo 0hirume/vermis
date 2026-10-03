@@ -402,3 +402,17 @@ fn new_condition_errors_keep_their_original_chronological_slot() {
     let tree = parse(b"if const value = f//nd");
     update(&tree, Span { start: 16, end: 17 }, b"</A>");
 }
+
+#[test]
+fn extending_inspected_token_invalidates_preceding_diagnostics() {
+    for (source, expected) in [
+        (b"e\n@e".as_slice(), b"e\n@eend".as_slice()),
+        (b"e\n@e\n@n".as_slice(), b"e\n@eend\n@n".as_slice()),
+    ] {
+        let tree = parse(source);
+        assert_eq!(tree.diagnostics()[0].span, Span { start: 2, end: 4 });
+        let updated = update(&tree, Span { start: 4, end: 4 }, b"end");
+        assert_eq!(updated.source(), expected);
+        assert_eq!(updated.diagnostics()[0].span, Span { start: 2, end: 7 });
+    }
+}

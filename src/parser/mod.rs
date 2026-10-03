@@ -252,6 +252,16 @@ impl<'source> Parser<'source> {
         }
     }
 
+    fn inspect_token(&self, token: Token) {
+        let mut span = token.span;
+
+        if !span.is_empty() {
+            span.end = span.end.saturating_add(1);
+        }
+
+        self.inspect(span);
+    }
+
     fn current(&self) -> Token {
         let mut token = self.raw_current();
 
@@ -260,7 +270,7 @@ impl<'source> Parser<'source> {
             token.span.end = token.span.start;
         }
 
-        self.inspect(token.span);
+        self.inspect_token(token);
 
         token
     }
@@ -420,7 +430,7 @@ impl<'source> Parser<'source> {
         let begin = self.cursor + usize::from(self.raw_current().kind != TokenKind::Eof);
 
         for token in &self.builder.tokens[begin..] {
-            self.inspect(token.span);
+            self.inspect_token(*token);
 
             if !trivia(token.kind) {
                 return token.kind;
