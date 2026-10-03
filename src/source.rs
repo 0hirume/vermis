@@ -378,7 +378,7 @@ fn split(root: Arc<Node>, offset: usize) -> (Option<Arc<Node>>, Option<Arc<Node>
 #[derive(Clone, Debug)]
 pub(crate) struct Source {
     root: Option<Arc<Node>>,
-    contiguous: Arc<OnceLock<Arc<[u8]>>>,
+    contiguous: Option<Arc<OnceLock<Arc<[u8]>>>>,
 }
 
 impl From<&[u8]> for Source {
@@ -417,9 +417,14 @@ impl From<&[u8]> for Source {
 
 impl Source {
     fn from_root(root: Option<Arc<Node>>) -> Self {
+        let contiguous = root
+            .as_ref()
+            .filter(|root| matches!(root.contents, Contents::Children(_)))
+            .map(|_| Arc::new(OnceLock::new()));
+
         Self {
             root,
-            contiguous: Arc::new(OnceLock::new()),
+            contiguous,
         }
     }
 
@@ -432,21 +437,27 @@ impl Source {
             None => &[],
             Some(Contents::Piece(piece)) => &piece.bytes[piece.range.clone()],
 
-            Some(Contents::Children(_)) => self.contiguous.get_or_init(|| {
-                let mut bytes = Vec::with_capacity(self.len());
+            Some(Contents::Children(_)) => self
+                .contiguous
+                .as_ref()
+                .expect("composite source has a flattening cache")
+                .get_or_init(|| {
+                    let mut bytes = Vec::with_capacity(self.len());
 
-                for chunk in self.chunks() {
-                    bytes.extend_from_slice(chunk);
-                }
+                    for chunk in self.chunks() {
+                        bytes.extend_from_slice(chunk);
+                    }
 
-                Arc::from(bytes)
-            }),
+                    Arc::from(bytes)
+                }),
         }
     }
 
     #[cfg(test)]
     pub(crate) fn materialized(&self) -> bool {
-        self.contiguous.get().is_some()
+        self.contiguous
+            .as_ref()
+            .is_some_and(|contiguous| contiguous.get().is_some())
     }
 
     pub(crate) fn chunks(&self) -> impl Iterator<Item = &[u8]> + Clone {
@@ -456,20 +467,57 @@ impl Source {
     }
 
     pub(crate) fn slice(&self, span: Span) -> Self {
+        fn extract(root: &Arc<Node>, span: Span) -> Arc<Node> {
+            if span.start == 0 && span.end == root.measure.length {
+                return Arc::clone(root);
+            }
+
+            match &root.contents {
+                Contents::Piece(piece) => Node::piece(Piece {
+                    bytes: Arc::clone(&piece.bytes),
+                    range: piece.range.start + span.start..piece.range.start + span.end,
+                }),
+
+                Contents::Children(children) => {
+                    let mut selected = Vec::new();
+                    let mut offset = 0;
+
+                    for child in children {
+                        let end = offset + child.measure.length;
+
+                        if span.start < end && offset < span.end {
+                            selected.push(extract(
+                                child,
+                                Span {
+                                    start: span.start.saturating_sub(offset),
+                                    end: span.end.min(end) - offset,
+                                },
+                            ));
+                        }
+
+                        offset = end;
+
+                        if offset >= span.end {
+                            break;
+                        }
+                    }
+
+                    rebuild(selected).expect("nonempty source slice")
+                }
+            }
+        }
+
         assert!(span.start <= span.end && span.end <= self.len());
 
         if span.start == 0 && span.end == self.len() {
             return self.clone();
         }
 
-        let Some(root) = &self.root else {
+        if span.is_empty() {
             return Self::from_root(None);
-        };
+        }
 
-        let (before, _) = split(Arc::clone(root), span.end);
-        let selected = before.and_then(|root| split(root, span.start).1);
-
-        Self::from_root(selected)
+        Self::from_root(self.root.as_ref().map(|root| extract(root, span)))
     }
 
     pub(crate) fn replace(&self, span: Span, replacement: &[u8]) -> Self {
@@ -745,10 +793,10 @@ mod tests {
     #[test]
     fn contiguous_bytes_are_lazy_and_clones_share_roots() {
         let source = Source::from(b"abcd".as_slice());
-        assert!(source.contiguous.get().is_none());
+        assert!(!source.materialized());
         let slice = source.slice(Span { start: 1, end: 3 });
         assert_eq!(slice.bytes().as_ptr(), source.bytes()[1..].as_ptr());
-        assert!(slice.contiguous.get().is_none());
+        assert!(!slice.materialized());
         let edited = source.replace(Span { start: 2, end: 2 }, b"!");
         let cloned = edited.clone();
 
@@ -769,10 +817,13 @@ mod tests {
             vec![b"ab".as_slice(), b"!", b"cd"]
         );
 
-        assert!(edited.contiguous.get().is_none());
+        assert!(!edited.materialized());
         assert_eq!(edited.bytes(), b"ab!cd");
         assert_eq!(cloned.bytes().as_ptr(), edited.bytes().as_ptr());
-        assert!(Arc::ptr_eq(&edited.contiguous, &cloned.contiguous));
+        assert!(Arc::ptr_eq(
+            edited.contiguous.as_ref().unwrap(),
+            cloned.contiguous.as_ref().unwrap()
+        ));
     }
 
     #[test]
@@ -781,7 +832,7 @@ mod tests {
         assert_eq!(empty.len(), 0);
         assert_eq!(empty.bytes(), b"");
         assert_eq!(empty.chunks().count(), 0);
-        assert!(empty.contiguous.get().is_none());
+        assert!(!empty.materialized());
         assert_eq!(empty.slice(Span { start: 0, end: 0 }).bytes(), b"");
         let source = empty.replace(Span { start: 0, end: 0 }, b"abc");
         let deleted = source.replace(Span { start: 0, end: 3 }, b"");
@@ -849,8 +900,8 @@ mod tests {
 
         assert_eq!(piece.bytes.len(), BUFFER_CAPACITY);
         assert_eq!(tiny.bytes(), b"x");
-        assert!(original.contiguous.get().is_none());
-        assert!(edited.contiguous.get().is_none());
+        assert!(!original.materialized());
+        assert!(!edited.materialized());
         validate(original.root.as_ref().unwrap(), true);
         validate(edited.root.as_ref().unwrap(), true);
     }
@@ -980,7 +1031,7 @@ mod tests {
         );
 
         assert_eq!(source.position(14), Err(CoordinateError::OutOfBounds));
-        assert!(source.contiguous.get().is_none());
+        assert!(!source.materialized());
         assert_eq!(source.bytes(), bytes);
     }
 
@@ -1021,8 +1072,8 @@ mod tests {
             );
         }
 
-        assert!(original.contiguous.get().is_none());
-        assert!(restored.contiguous.get().is_none());
+        assert!(!original.materialized());
+        assert!(!restored.materialized());
     }
 
     #[test]
@@ -1089,7 +1140,7 @@ mod tests {
             Ok(source.len())
         );
 
-        assert!(source.contiguous.get().is_none());
+        assert!(!source.materialized());
         validate(source.root.as_ref().unwrap(), true);
     }
 
