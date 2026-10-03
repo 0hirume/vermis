@@ -1,6 +1,6 @@
 [package]
 name = "vermis"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 description = "A lossless Luau parser for formatting, linting, and source analysis"
 repository = "https://github.com/0hirume/vermis"
