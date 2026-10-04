@@ -877,4 +877,414 @@ impl<'source> Tree<'source> {
     pub fn text(&self, index: NodeIndex) -> &'source [u8] {
         self.node(index).span.bytes(self.source)
     }
+
+    /// Returns a node's immediate syntax children in source order.
+    pub fn children(&self, index: NodeIndex) -> Vec<NodeIndex> {
+        let kind = &self.node(index).kind;
+        let mut children = Vec::new();
+
+        match kind {
+            NodeKind::Root { .. }
+            | NodeKind::Block { .. }
+            | NodeKind::Local { .. }
+            | NodeKind::Constant { .. }
+            | NodeKind::Assignment { .. }
+            | NodeKind::CompoundAssignment { .. }
+            | NodeKind::CallStatement { .. }
+            | NodeKind::If { .. }
+            | NodeKind::Branch { .. }
+            | NodeKind::Else { .. }
+            | NodeKind::While { .. }
+            | NodeKind::Repeat { .. }
+            | NodeKind::NumericFor { .. }
+            | NodeKind::GenericFor { .. }
+            | NodeKind::Do { .. }
+            | NodeKind::Return { .. }
+            | NodeKind::Export { .. }
+            | NodeKind::Declaration { .. } => self.statement_children(kind, &mut children),
+
+            NodeKind::Function { .. }
+            | NodeKind::FunctionName { .. }
+            | NodeKind::Parameters { .. }
+            | NodeKind::Binding { .. }
+            | NodeKind::Returns { .. }
+            | NodeKind::Variadic { .. }
+            | NodeKind::Attributes { .. }
+            | NodeKind::AttributeGroup { .. }
+            | NodeKind::Attribute { .. }
+            | NodeKind::Generics { .. }
+            | NodeKind::Generic { .. } => self.function_children(kind, &mut children),
+
+            NodeKind::Arguments { .. }
+            | NodeKind::Unary { .. }
+            | NodeKind::Binary { .. }
+            | NodeKind::Group { .. }
+            | NodeKind::Call { .. }
+            | NodeKind::MethodCall { .. }
+            | NodeKind::Field { .. }
+            | NodeKind::Index { .. }
+            | NodeKind::Instantiate { .. }
+            | NodeKind::InstantiationArguments { .. }
+            | NodeKind::Assertion { .. }
+            | NodeKind::Conditional { .. }
+            | NodeKind::Interpolation { .. }
+            | NodeKind::Table { .. }
+            | NodeKind::TableField { .. } => self.expression_children(kind, &mut children),
+
+            NodeKind::TypeAlias { .. }
+            | NodeKind::Class { .. }
+            | NodeKind::Property { .. }
+            | NodeKind::Extends { .. }
+            | NodeKind::TypeName { .. }
+            | NodeKind::TypeTable { .. }
+            | NodeKind::TypeField { .. }
+            | NodeKind::TypeIndexer { .. }
+            | NodeKind::TypeFunction { .. }
+            | NodeKind::TypeGroup { .. }
+            | NodeKind::TypePack { .. }
+            | NodeKind::GenericPack { .. }
+            | NodeKind::VariadicType { .. }
+            | NodeKind::TypeParameter { .. }
+            | NodeKind::TypeArguments { .. }
+            | NodeKind::TypeUnion { .. }
+            | NodeKind::TypeIntersection { .. }
+            | NodeKind::TypeOptional { .. }
+            | NodeKind::TypeOf { .. } => self.type_children(kind, &mut children),
+
+            NodeKind::Error
+            | NodeKind::Missing { .. }
+            | NodeKind::Name { .. }
+            | NodeKind::Number { .. }
+            | NodeKind::String { .. }
+            | NodeKind::Boolean { .. }
+            | NodeKind::Nil { .. }
+            | NodeKind::Break { .. }
+            | NodeKind::Continue { .. } => {}
+        }
+
+        children
+    }
+
+    fn statement_children(&self, kind: &NodeKind, children: &mut Vec<NodeIndex>) {
+        match kind {
+            NodeKind::Root { block, .. } => children.push(*block),
+
+            NodeKind::Block { statements }
+            | NodeKind::Return {
+                values: statements, ..
+            } => {
+                children.extend(self.list(statements).iter().map(|entry| entry.node));
+            }
+
+            NodeKind::Local {
+                bindings, values, ..
+            }
+            | NodeKind::Constant {
+                bindings, values, ..
+            }
+            | NodeKind::Assignment {
+                targets: bindings,
+                values,
+                ..
+            } => {
+                children.extend(
+                    self.list(bindings)
+                        .iter()
+                        .chain(self.list(values))
+                        .map(|entry| entry.node),
+                );
+            }
+
+            NodeKind::CompoundAssignment { target, value, .. } => {
+                children.extend([*target, *value]);
+            }
+
+            NodeKind::CallStatement { call } => children.push(*call),
+
+            NodeKind::If {
+                branches,
+                otherwise,
+                ..
+            } => {
+                children.extend(self.list(branches).iter().map(|entry| entry.node));
+                children.extend(*otherwise);
+            }
+
+            NodeKind::Branch {
+                condition, body, ..
+            }
+            | NodeKind::While {
+                condition, body, ..
+            } => children.extend([*condition, *body]),
+
+            NodeKind::Else { body, .. } | NodeKind::Do { body, .. } => children.push(*body),
+
+            NodeKind::Repeat {
+                body, condition, ..
+            } => children.extend([*body, *condition]),
+
+            NodeKind::NumericFor {
+                binding,
+                start,
+                end,
+                step,
+                body,
+                ..
+            } => {
+                children.extend([*binding, *start, *end]);
+                children.extend(*step);
+                children.push(*body);
+            }
+
+            NodeKind::GenericFor {
+                bindings,
+                values,
+                body,
+                ..
+            } => {
+                children.extend(
+                    self.list(bindings)
+                        .iter()
+                        .chain(self.list(values))
+                        .map(|entry| entry.node),
+                );
+
+                children.push(*body);
+            }
+
+            NodeKind::Export {
+                attributes,
+                declaration,
+                ..
+            } => {
+                children.extend(*attributes);
+                children.push(*declaration);
+            }
+
+            NodeKind::Declaration { declaration, .. } => children.push(*declaration),
+            _ => unreachable!("expected statement syntax"),
+        }
+    }
+
+    fn function_children(&self, kind: &NodeKind, children: &mut Vec<NodeIndex>) {
+        match kind {
+            NodeKind::Function {
+                attributes,
+                name,
+                generics,
+                parameters,
+                returns,
+                body,
+                ..
+            } => {
+                children.extend(*attributes);
+                children.extend(*name);
+                children.extend(*generics);
+                children.push(*parameters);
+                children.extend(*returns);
+                children.extend(*body);
+            }
+
+            NodeKind::FunctionName { path, method, .. } => {
+                children.extend(self.list(path).iter().map(|entry| entry.node));
+                children.extend(*method);
+            }
+
+            NodeKind::Parameters { parameters, .. }
+            | NodeKind::Attributes {
+                attributes: parameters,
+            }
+            | NodeKind::AttributeGroup {
+                attributes: parameters,
+                ..
+            }
+            | NodeKind::Generics { parameters, .. } => {
+                children.extend(self.list(parameters).iter().map(|entry| entry.node));
+            }
+
+            NodeKind::Binding {
+                name, annotation, ..
+            }
+            | NodeKind::Generic {
+                name,
+                default: annotation,
+                ..
+            }
+            | NodeKind::Attribute {
+                name,
+                arguments: annotation,
+            } => {
+                children.push(*name);
+                children.extend(*annotation);
+            }
+
+            NodeKind::Returns { annotation, .. } => children.push(*annotation),
+            NodeKind::Variadic { annotation, .. } => children.extend(*annotation),
+            _ => unreachable!("expected function syntax"),
+        }
+    }
+
+    fn expression_children(&self, kind: &NodeKind, children: &mut Vec<NodeIndex>) {
+        match kind {
+            NodeKind::Arguments { values, .. }
+            | NodeKind::Interpolation { segments: values }
+            | NodeKind::Table { fields: values, .. } => {
+                children.extend(self.list(values).iter().map(|entry| entry.node));
+            }
+
+            NodeKind::Unary { operand, .. } => children.push(*operand),
+
+            NodeKind::Binary { left, right, .. }
+            | NodeKind::Call {
+                callee: left,
+                arguments: right,
+            }
+            | NodeKind::Index {
+                receiver: left,
+                key: right,
+                ..
+            }
+            | NodeKind::Instantiate {
+                expression: left,
+                arguments: right,
+            }
+            | NodeKind::Assertion {
+                expression: left,
+                annotation: right,
+                ..
+            } => children.extend([*left, *right]),
+
+            NodeKind::Group { expression, .. }
+            | NodeKind::InstantiationArguments {
+                arguments: expression,
+                ..
+            } => children.push(*expression),
+
+            NodeKind::MethodCall {
+                receiver,
+                method,
+                instantiation,
+                arguments,
+                ..
+            } => {
+                children.extend([*receiver, *method]);
+                children.extend(*instantiation);
+                children.push(*arguments);
+            }
+
+            NodeKind::Field { receiver, name, .. } => children.extend([*receiver, *name]),
+
+            NodeKind::Conditional {
+                condition,
+                truthy,
+                falsy,
+                ..
+            } => children.extend([*condition, *truthy, *falsy]),
+
+            NodeKind::TableField { key, value, .. } => {
+                children.extend(*key);
+                children.push(*value);
+            }
+
+            _ => unreachable!("expected expression syntax"),
+        }
+    }
+
+    fn type_children(&self, kind: &NodeKind, children: &mut Vec<NodeIndex>) {
+        match kind {
+            NodeKind::TypeAlias {
+                name,
+                generics,
+                annotation,
+                ..
+            } => {
+                children.push(*name);
+                children.extend(*generics);
+                children.push(*annotation);
+            }
+
+            NodeKind::Class {
+                name,
+                extends,
+                members,
+                ..
+            } => {
+                children.push(*name);
+                children.extend(*extends);
+                children.extend(self.list(members).iter().map(|entry| entry.node));
+            }
+
+            NodeKind::Property { binding, .. } => children.push(*binding),
+            NodeKind::Extends { superclass, .. } => children.push(*superclass),
+
+            NodeKind::TypeName {
+                namespace,
+                name,
+                arguments,
+                ..
+            } => {
+                children.extend(*namespace);
+                children.push(*name);
+                children.extend(*arguments);
+            }
+
+            NodeKind::TypeTable {
+                element, fields, ..
+            } => {
+                children.extend(*element);
+                children.extend(self.list(fields).iter().map(|entry| entry.node));
+            }
+
+            NodeKind::TypeField {
+                key: left,
+                annotation: right,
+                ..
+            }
+            | NodeKind::TypeIndexer {
+                key: left,
+                annotation: right,
+                ..
+            }
+            | NodeKind::TypeParameter {
+                name: left,
+                annotation: right,
+                ..
+            } => children.extend([*left, *right]),
+
+            NodeKind::TypeFunction {
+                attributes,
+                generics,
+                parameters,
+                returns,
+                ..
+            } => {
+                children.extend(*attributes);
+                children.extend(*generics);
+                children.extend([*parameters, *returns]);
+            }
+
+            NodeKind::TypeGroup { annotation, .. }
+            | NodeKind::VariadicType { annotation, .. }
+            | NodeKind::TypeOptional { annotation, .. } => children.push(*annotation),
+
+            NodeKind::TypePack { types, .. } => {
+                children.extend(self.list(types).iter().map(|entry| entry.node));
+            }
+
+            NodeKind::GenericPack { name, .. } => children.push(*name),
+
+            NodeKind::TypeArguments { arguments, .. } => {
+                children.extend(self.list(arguments).iter().map(|entry| entry.node));
+            }
+
+            NodeKind::TypeUnion { left, right, .. }
+            | NodeKind::TypeIntersection { left, right, .. } => {
+                children.extend(*left);
+                children.push(*right);
+            }
+
+            NodeKind::TypeOf { expression, .. } => children.push(*expression),
+            _ => unreachable!("expected type syntax"),
+        }
+    }
 }
