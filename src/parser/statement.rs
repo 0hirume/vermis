@@ -9,14 +9,14 @@ impl Parser<'_> {
 
     fn statement_contents(&mut self) -> Result<NodeIndex, Diagnostic> {
         match self.current().kind {
-            TokenKind::Keyword(Keyword::Local) => Ok(self.local(false, None)),
+            TokenKind::Keyword(Keyword::Local) => self.local(false, None),
 
             TokenKind::Keyword(Keyword::Function) => {
                 let start = self.position();
                 let keyword = Some(self.take());
                 let name = Some(self.function_name());
 
-                Ok(self.function(start, None, None, keyword, name))
+                self.function(start, None, None, keyword, name)
             }
 
             TokenKind::Attribute | TokenKind::Symbol(Symbol::AttributeOpen) => {
@@ -60,13 +60,13 @@ impl Parser<'_> {
                 return Err(self.error("expected function after attributes"));
             }
 
-            Ok(self.local(false, attributes))
+            self.local(false, attributes)
         } else if self.named(b"const") {
             if self.lookahead() != TokenKind::Keyword(Keyword::Function) {
                 return Err(self.error("expected function after attributes"));
             }
 
-            Ok(self.local(true, attributes))
+            self.local(true, attributes)
         } else if self.at(TokenKind::Keyword(Keyword::Function)) || self.at(TokenKind::EndOfFile) {
             let keyword = self.expect(
                 TokenKind::Keyword(Keyword::Function),
@@ -75,7 +75,7 @@ impl Parser<'_> {
 
             let name = Some(self.function_name());
 
-            Ok(self.function(start, attributes, None, keyword, name))
+            self.function(start, attributes, None, keyword, name)
         } else {
             Err(self.error("expected function declaration after attributes"))
         }
@@ -90,9 +90,9 @@ impl Parser<'_> {
         );
 
         if self.named(b"const") && declaration {
-            Ok(self.local(true, None))
+            self.local(true, None)
         } else if self.named(b"type") && declaration {
-            Ok(self.alias_statement())
+            self.alias_statement()
         } else if self.named(b"declare") && declaration {
             self.declaration_statement(None)
         } else if self.named(b"export")
@@ -129,7 +129,11 @@ impl Parser<'_> {
         }
     }
 
-    fn local(&mut self, constant: bool, attributes: Option<NodeIndex>) -> NodeIndex {
+    fn local(
+        &mut self,
+        constant: bool,
+        attributes: Option<NodeIndex>,
+    ) -> Result<NodeIndex, Diagnostic> {
         let start = attributes.map_or_else(|| self.position(), |node| self.node(node).tokens.start);
         let keyword = self.take();
 
@@ -193,7 +197,7 @@ impl Parser<'_> {
             }
         };
 
-        self.append_node(start, kind)
+        Ok(self.append_node(start, kind))
     }
 
     fn binding(&mut self, declaration: bool) -> NodeIndex {
@@ -625,7 +629,7 @@ impl Parser<'_> {
                     "expected function after attributes",
                 );
 
-                Ok(parser.function(start, attributes, None, keyword, None))
+                parser.function(start, attributes, None, keyword, None)
             })
         })
     }
@@ -637,31 +641,29 @@ impl Parser<'_> {
         prefix: Option<TokenIndex>,
         keyword: Option<TokenIndex>,
         name: Option<NodeIndex>,
-    ) -> NodeIndex {
-        self.required("function", |parser| {
-            parser.nested(|parser| {
-                let (generics, parameters, returns) = parser.signature(false, false);
-                let loop_depth = parser.loop_depth;
-                parser.loop_depth = 0;
-                let body = Some(parser.block(&[Keyword::End]));
-                parser.loop_depth = loop_depth;
-                let end = parser.expect(TokenKind::Keyword(Keyword::End), "expected end");
+    ) -> Result<NodeIndex, Diagnostic> {
+        self.nested(|parser| {
+            let (generics, parameters, returns) = parser.signature(false, false);
+            let loop_depth = parser.loop_depth;
+            parser.loop_depth = 0;
+            let body = Some(parser.block(&[Keyword::End]));
+            parser.loop_depth = loop_depth;
+            let end = parser.expect(TokenKind::Keyword(Keyword::End), "expected end");
 
-                Ok(parser.append_node(
-                    start,
-                    NodeKind::Function {
-                        attributes,
-                        prefix,
-                        keyword,
-                        name,
-                        generics,
-                        parameters,
-                        returns,
-                        body,
-                        end,
-                    },
-                ))
-            })
+            Ok(parser.append_node(
+                start,
+                NodeKind::Function {
+                    attributes,
+                    prefix,
+                    keyword,
+                    name,
+                    generics,
+                    parameters,
+                    returns,
+                    body,
+                    end,
+                },
+            ))
         })
     }
 
@@ -818,7 +820,7 @@ impl Parser<'_> {
         )
     }
 
-    fn alias_statement(&mut self) -> NodeIndex {
+    fn alias_statement(&mut self) -> Result<NodeIndex, Diagnostic> {
         let start = self.position();
         let keyword = self.take();
 
@@ -844,7 +846,7 @@ impl Parser<'_> {
 
         let annotation = self.annotation();
 
-        self.append_node(
+        Ok(self.append_node(
             start,
             NodeKind::TypeAlias {
                 keyword,
@@ -853,7 +855,7 @@ impl Parser<'_> {
                 assignment,
                 annotation,
             },
-        )
+        ))
     }
 
     fn export_statement(&mut self, attributes: Option<NodeIndex>) -> Result<NodeIndex, Diagnostic> {
@@ -865,7 +867,7 @@ impl Parser<'_> {
             let function_keyword = Some(self.take());
             let name = Some(self.name());
 
-            self.function(begin, None, None, function_keyword, name)
+            self.function(begin, None, None, function_keyword, name)?
         } else {
             if attributes.is_some() {
                 return Err(self.error("expected exported function after attributes"));
@@ -1148,7 +1150,7 @@ impl Parser<'_> {
             let node = if external {
                 self.declared_function(start, attributes, None, keyword, name, true)
             } else {
-                self.function(start, None, public, keyword, name)
+                self.function(start, None, public, keyword, name)?
             };
 
             if !external {

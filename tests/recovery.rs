@@ -326,6 +326,29 @@ fn nested_syntax_stays_within_stack_budget() {
 }
 
 #[test]
+fn failed_nested_functions_do_not_leave_unreachable_nodes() {
+    for (depth, declaration) in [
+        (255, "function f"),
+        (255, "local function f"),
+        (255, "type function f"),
+        (255, "export function f"),
+        (255, "@native function f"),
+        (255, "@native"),
+        (254, "class C function f"),
+    ] {
+        let source = format!("{}{}", "do ".repeat(depth), declaration);
+        let tree = check(source.as_bytes());
+
+        assert!(
+            tree.diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message == "syntax nesting limit exceeded"),
+            "{declaration}"
+        );
+    }
+}
+
+#[test]
 fn failed_statements_are_not_reparsed() {
     let unit = "(@;";
     let diagnostics = check(unit.as_bytes()).diagnostics.len();
