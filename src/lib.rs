@@ -1,5 +1,8 @@
 //! Lossless Luau parsing with indexed syntax and diagnostics.
 
+/// Typed Luau output.
+pub mod emitter;
+
 /// Byte-oriented tokenization.
 pub mod lexer;
 
