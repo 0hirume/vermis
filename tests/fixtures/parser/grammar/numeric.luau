@@ -1,0 +1,1 @@
+for index = 1, limit, step do use(index) end

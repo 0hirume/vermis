@@ -1,0 +1,1 @@
+local first, second = 17, 23, 41

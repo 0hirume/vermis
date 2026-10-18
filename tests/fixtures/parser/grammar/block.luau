@@ -1,0 +1,1 @@
+do local first, second: string = 1, 'two' first += 1 end

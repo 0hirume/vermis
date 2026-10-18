@@ -1,0 +1,1 @@
+declare library: Box<@checked () -> ()>

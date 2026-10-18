@@ -1,0 +1,1 @@
+@checked declare function identity(value: number): number

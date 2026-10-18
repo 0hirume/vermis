@@ -1,0 +1,1 @@
+type Array = {write number}

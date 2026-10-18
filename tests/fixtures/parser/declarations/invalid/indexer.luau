@@ -1,0 +1,1 @@
+declare library: {[@checked () -> ()]: number}

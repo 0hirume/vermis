@@ -1,0 +1,1 @@
+local identity = @[deprecated {reason = 'old'}] function() end object:method<<number>>(1)

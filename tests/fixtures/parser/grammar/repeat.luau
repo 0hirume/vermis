@@ -1,0 +1,1 @@
+repeat local ready = value until ready

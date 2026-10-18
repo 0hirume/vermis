@@ -1,0 +1,1 @@
+export const answer = 42 export function identity() end export type Value = number

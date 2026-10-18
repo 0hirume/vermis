@@ -1,0 +1,1 @@
+declare library: {read identity: @checked (number) -> number}

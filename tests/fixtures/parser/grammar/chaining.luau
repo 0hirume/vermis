@@ -1,0 +1,1 @@
+local result = object.field[index](1, 2):method {name = 'value', [key] = value, true}

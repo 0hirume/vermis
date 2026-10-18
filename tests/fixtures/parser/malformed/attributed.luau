@@ -1,0 +1,1 @@
+declare extern type Object with @checked function identity<Value>(self) end

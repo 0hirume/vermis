@@ -1,0 +1,1 @@
+if const ready = value then return ready elseif other then use() else fallback() end

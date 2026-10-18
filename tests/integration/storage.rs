@@ -1,0 +1,100 @@
+//! Indexed storage tests.
+
+use std::fmt::Write as _;
+
+use vermis::token::TokenKind;
+use vermis::tree::NodeKind;
+
+use crate::support::{check, first};
+
+#[test]
+fn wide_siblings_keep_source_order() {
+    let mut source = String::new();
+
+    for number in 0..4096 {
+        writeln!(source, "local value{number} = {number}")
+            .expect("expected string write to succeed");
+    }
+
+    let tree = check(source.as_bytes());
+
+    assert!(
+        tree.diagnostics.is_empty(),
+        "{:?}: {:?}",
+        tree.source,
+        tree.diagnostics
+    );
+
+    let NodeKind::Root { block, .. } = tree.node(tree.root).kind else {
+        panic!("expected root node");
+    };
+
+    let NodeKind::Block { statements } = &tree.node(block).kind else {
+        panic!("expected block node");
+    };
+
+    let statements = tree.list(statements);
+    assert_eq!(statements.len(), 4096);
+
+    for (number, statement) in statements.iter().enumerate() {
+        let NodeKind::Local { .. } = tree.node(statement.node).kind else {
+            panic!("expected local node");
+        };
+
+        assert_eq!(
+            tree.text(statement.node),
+            format!("local value{number} = {number}").as_bytes()
+        );
+    }
+}
+
+#[test]
+fn deep_postfix_chains_parse_and_drop() {
+    let calls = 4096;
+    let mut source = b"return value".to_vec();
+
+    for _ in 0..calls {
+        source.extend_from_slice(b"()");
+    }
+
+    let tree = check(&source);
+
+    assert!(
+        tree.diagnostics.is_empty(),
+        "{:?}: {:?}",
+        tree.source,
+        tree.diagnostics
+    );
+
+    assert_eq!(tree.nodes.len(), 4 + calls * 2);
+    assert_eq!(tree.tokens.len(), 4 + calls * 2);
+
+    let name = first(&tree, |kind| matches!(kind, NodeKind::Name { .. }));
+    assert_eq!(tree.text(name), b"value");
+    assert_eq!(tree.text(tree.root), source);
+
+    let last = &tree.tokens[tree.tokens.len() - 2];
+    assert_eq!(last.bytes(tree.source), b")");
+
+    assert_eq!(
+        tree.tokens.last().expect("expected end-of-file token").kind,
+        TokenKind::EndOfFile
+    );
+
+    let call = first(&tree, |kind| matches!(kind, NodeKind::Call { .. }));
+
+    let NodeKind::Call { arguments, .. } = tree.node(call).kind else {
+        panic!("expected call node");
+    };
+
+    let NodeKind::Arguments {
+        closing: Some(closing),
+        ..
+    } = tree.node(arguments).kind
+    else {
+        panic!("expected arguments node");
+    };
+
+    assert_eq!(tree.token(closing), last);
+    drop(tree);
+}

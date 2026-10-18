@@ -1,10 +1,12 @@
 #![no_main]
 
-#[path = "../tests/support/mod.rs"]
-pub mod support;
+#[path = "../tests/support/validation.rs"]
+mod support;
 
 use libfuzzer_sys::fuzz_target;
 
+use self::support::check;
+
 fuzz_target!(|source: &[u8]| {
-    support::check(source);
+    drop(check(source));
 });

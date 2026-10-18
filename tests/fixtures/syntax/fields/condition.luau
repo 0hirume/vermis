@@ -1,0 +1,1 @@
+if local value = input then call() elseif other then call() else call() end

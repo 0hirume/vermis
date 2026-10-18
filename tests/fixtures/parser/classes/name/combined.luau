@@ -1,0 +1,1 @@
+export open class Child extends Parent end

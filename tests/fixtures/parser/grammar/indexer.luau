@@ -1,0 +1,1 @@
+type Value = {["key"]: typeof(value.field)}

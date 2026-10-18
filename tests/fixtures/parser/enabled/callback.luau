@@ -1,0 +1,1 @@
+declare functions: {identity: @checked <T>(value: T) -> T}

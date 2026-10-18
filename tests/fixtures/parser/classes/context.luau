@@ -1,0 +1,1 @@
+declare extern type Box with public: number read: string write: boolean end

@@ -1,0 +1,1 @@
+local value = (identity<<number>>(1) :: number) + -other local item = object[key]

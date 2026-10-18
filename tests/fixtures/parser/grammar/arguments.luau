@@ -1,0 +1,1 @@
+type Value = First<(number), (string)?, ...number>

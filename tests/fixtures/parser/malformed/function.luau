@@ -1,0 +1,1 @@
+function identity<>() end

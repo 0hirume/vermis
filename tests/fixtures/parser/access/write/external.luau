@@ -1,0 +1,1 @@
+declare extern type Object with write value: number end

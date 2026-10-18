@@ -1,0 +1,1 @@
+function f(first: number): number return first end

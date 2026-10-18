@@ -1,0 +1,1 @@
+declare callback: @checked (value: string) -> string

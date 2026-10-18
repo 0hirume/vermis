@@ -1,0 +1,1 @@
+@debugnoinline function identity(value) return value end

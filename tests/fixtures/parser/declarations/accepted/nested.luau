@@ -1,0 +1,1 @@
+declare library: {nested: {identity: @checked (number) -> number}}

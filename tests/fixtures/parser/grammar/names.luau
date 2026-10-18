@@ -1,0 +1,1 @@
+local type, class, const, declare, export, continue = 1, 2, 3, 4, 5, 6

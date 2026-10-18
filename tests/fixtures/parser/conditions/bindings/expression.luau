@@ -1,0 +1,1 @@
+return if local first: number = value then first elseif const second = other then second else fallback

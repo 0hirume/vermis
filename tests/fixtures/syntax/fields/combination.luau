@@ -1,0 +1,1 @@
+type Value = <T>(value: T) -> ...T type Union = | number | string type Intersection = & First & Second

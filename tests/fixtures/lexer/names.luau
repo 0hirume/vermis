@@ -1,0 +1,1 @@
+local foo_1 = .5 0xABC 1e+2

@@ -1,0 +1,1 @@
+@native const value = 1

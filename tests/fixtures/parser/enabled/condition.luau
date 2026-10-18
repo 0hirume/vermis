@@ -1,0 +1,1 @@
+if local first: number = value then use(first) elseif const second = other then use(second) else fallback() end

@@ -1,0 +1,1 @@
+type Object = {[ [[key]] ]: number}

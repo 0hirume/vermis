@@ -1,0 +1,1 @@
+type Value = <T>(value: T) -> (T, string)

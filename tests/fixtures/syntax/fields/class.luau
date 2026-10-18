@@ -1,0 +1,1 @@
+open class Object extends namespace.Parent public value: number public function get(self) return self.value end end

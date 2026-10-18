@@ -1,0 +1,1 @@
+@native const function module.identity() end

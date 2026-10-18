@@ -1,0 +1,1 @@
+type Object = {read: number, write: string}

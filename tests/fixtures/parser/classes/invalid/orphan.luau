@@ -1,0 +1,1 @@
+declare extern type Box with @checked end

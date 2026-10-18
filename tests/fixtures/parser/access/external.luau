@@ -1,0 +1,1 @@
+declare extern type Object with ['value']: number [string]: number end

@@ -1,0 +1,1 @@
+local callback = @native function(value) return value end

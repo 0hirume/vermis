@@ -1,0 +1,1 @@
+declare extern type Box with field: '\256' next: number end

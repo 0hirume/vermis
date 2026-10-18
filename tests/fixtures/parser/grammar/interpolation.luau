@@ -1,0 +1,1 @@
+local message = `hello {name}, {`nested {other}`}`

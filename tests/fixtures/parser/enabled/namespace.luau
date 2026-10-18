@@ -1,0 +1,1 @@
+local namespace = {} type Value = namespace.Value<number>

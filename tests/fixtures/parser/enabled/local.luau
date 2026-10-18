@@ -1,0 +1,1 @@
+export local first, second = 1, 2

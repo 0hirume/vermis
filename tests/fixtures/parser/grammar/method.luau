@@ -1,0 +1,1 @@
+local value = object:method<<number>>(1)

@@ -1,0 +1,1 @@
+declare value: @checked <T>(T) -> T declare extern type Object with @checked function get(self): number end

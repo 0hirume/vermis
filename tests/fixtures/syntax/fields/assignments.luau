@@ -1,0 +1,1 @@
+local first, second: number = 1, 2 first, second = second, first first += 1

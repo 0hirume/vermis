@@ -1,0 +1,1 @@
+type Value = {read number} type Group = (number)? type Reference = typeof(object.field)

@@ -1,0 +1,1 @@
+@native export const function identity() end

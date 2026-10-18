@@ -1,0 +1,1 @@
+@native export local function identity() end

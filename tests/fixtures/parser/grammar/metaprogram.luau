@@ -1,0 +1,1 @@
+type function identity(value) return value end

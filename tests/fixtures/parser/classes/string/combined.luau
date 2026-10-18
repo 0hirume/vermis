@@ -1,0 +1,1 @@
+export open class Child extends classes['Parent'] end

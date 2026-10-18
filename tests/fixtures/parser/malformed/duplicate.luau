@@ -1,0 +1,1 @@
+type Value = {first: number, read write second: number}

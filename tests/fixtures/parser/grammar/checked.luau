@@ -1,0 +1,1 @@
+@checked declare function callback(value: string): string

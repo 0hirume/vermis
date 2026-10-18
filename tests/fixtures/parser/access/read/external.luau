@@ -1,0 +1,1 @@
+declare extern type Object with read value: number end

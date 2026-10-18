@@ -1,0 +1,1 @@
+type Object = {read [string]: number}

@@ -1,0 +1,1 @@
+local identity = @[deprecated {reason = 'old'}] function(value) return value end

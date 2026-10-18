@@ -1,0 +1,1 @@
+return if const then const elseif const() then true else false

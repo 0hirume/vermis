@@ -1,0 +1,1 @@
+@[deprecated({reason = 'old'})] function old() end

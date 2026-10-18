@@ -1,0 +1,1 @@
+declare function f(first: number,

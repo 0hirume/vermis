@@ -1,0 +1,1 @@
+declare version: string declare function print(value: string): ()

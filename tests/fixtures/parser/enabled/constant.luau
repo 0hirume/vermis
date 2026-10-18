@@ -1,0 +1,1 @@
+export const first, second = 1, 2

@@ -1,0 +1,1 @@
+declare extern type Box with @[deprecated {reason = 'old'}] function get(self): number end

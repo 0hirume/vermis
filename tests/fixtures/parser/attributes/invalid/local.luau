@@ -1,0 +1,1 @@
+@native export local value = 1

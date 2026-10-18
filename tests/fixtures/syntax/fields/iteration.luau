@@ -1,0 +1,1 @@
+for key, value in pairs(values) do do call() end end

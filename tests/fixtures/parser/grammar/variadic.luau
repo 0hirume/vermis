@@ -1,0 +1,1 @@
+local function callback<Values...>(...: Values...): Values... return ... end

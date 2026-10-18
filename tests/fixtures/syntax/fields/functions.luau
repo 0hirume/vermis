@@ -1,0 +1,1 @@
+local function local_function() end const function constant_function() end

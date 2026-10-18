@@ -1,0 +1,1 @@
+local integers = {0i, 9_223_372_036_854_775_807i, 0xffffffffffffffffi, 0b1111i}

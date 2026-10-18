@@ -1,0 +1,1 @@
+function identity(): (number)? return nil end

@@ -1,0 +1,1 @@
+open class Child extends Parent end

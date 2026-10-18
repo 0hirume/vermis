@@ -1,0 +1,1 @@
+declare identity: @checked () -> () | nil

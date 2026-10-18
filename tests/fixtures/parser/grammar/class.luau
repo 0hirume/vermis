@@ -1,0 +1,1 @@
+open class Box extends Parent public value: string function get(self): string return self.value end end

@@ -1,0 +1,2 @@
+local first = 0x
+local second = 0x

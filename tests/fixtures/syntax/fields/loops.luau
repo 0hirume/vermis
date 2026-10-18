@@ -1,0 +1,1 @@
+while ready do break end repeat call() until ready for index = 1, 2, 1 do continue end

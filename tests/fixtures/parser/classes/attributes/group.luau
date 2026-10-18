@@ -1,0 +1,1 @@
+declare extern type Box extends Parent with @[checked, deprecated({reason = 'old'})] function get(self, key: string): number end

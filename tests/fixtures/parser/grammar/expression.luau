@@ -1,0 +1,1 @@
+local value = if ready then first elseif other then second else third

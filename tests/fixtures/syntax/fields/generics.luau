@@ -1,0 +1,1 @@
+type Value<T = number, Rest... = (string)> = {read value: T, [string]: (T) -> (T, Rest...)}

@@ -1,0 +1,1 @@
+@[native 'message'] const function identity<T>(value: T): T return value end

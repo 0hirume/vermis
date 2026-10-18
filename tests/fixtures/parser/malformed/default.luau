@@ -1,0 +1,1 @@
+type Value<Rest... = number> = number

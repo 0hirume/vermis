@@ -1,0 +1,1 @@
+@native local function identity() end

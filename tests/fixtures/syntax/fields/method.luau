@@ -1,0 +1,1 @@
+@native function namespace.object:method<T>(value: T, ...: string): T return value end

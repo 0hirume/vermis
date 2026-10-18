@@ -1,0 +1,1 @@
+declare extern type Box extends Parent with @checked function get(self, key: string): number end

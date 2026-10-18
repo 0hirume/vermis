@@ -1,0 +1,1 @@
+function identity(): (number) | string return 1 end

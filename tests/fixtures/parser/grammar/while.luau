@@ -1,0 +1,1 @@
+while ready do if stop then break end continue end

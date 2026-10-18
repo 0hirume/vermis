@@ -1,0 +1,1 @@
+type Value<T> = {read value: T?, callback: (T) -> (T, string)}

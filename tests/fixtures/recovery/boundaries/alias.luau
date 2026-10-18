@@ -1,0 +1,1 @@
+type Value<T> = {first: T, callback: (T) -> T}

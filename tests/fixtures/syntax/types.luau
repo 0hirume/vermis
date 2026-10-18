@@ -1,0 +1,1 @@
+type Result<T = number, Values... = ()> = {read value: T?, callback: (T) -> (T, Values...)} local result = object:method<<namespace.Result<>>>(1) :: Result<number>

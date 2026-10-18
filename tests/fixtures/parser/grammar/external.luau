@@ -1,0 +1,1 @@
+declare extern type Box extends Parent with value: number function get(self): number end

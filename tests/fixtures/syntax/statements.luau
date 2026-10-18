@@ -1,0 +1,1 @@
+@native export function identity<T>(value: T): T local copy = value + 1 copy += 2 return copy end

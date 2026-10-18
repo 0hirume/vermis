@@ -1,0 +1,1 @@
+function identity<Values...>(...: Values...): Values... return ... end

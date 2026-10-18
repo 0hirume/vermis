@@ -1,0 +1,1 @@
+local value = callback<<number>>(input)
