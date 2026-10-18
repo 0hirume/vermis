@@ -2,11 +2,6 @@ use std::iter::FusedIterator;
 
 use crate::token::{Keyword, Span, Symbol, Token, TokenKind};
 
-enum Brace {
-    Normal,
-    Interpolation,
-}
-
 /// Lossless byte lexer, including trivia and a final end-of-input token.
 pub struct Lexer<'source> {
     source: &'source [u8],
@@ -17,6 +12,7 @@ pub struct Lexer<'source> {
 
 impl<'source> Lexer<'source> {
     /// Starts lexing the given source bytes.
+    #[must_use]
     pub fn new(source: &'source [u8]) -> Self {
         Self {
             source,
@@ -42,8 +38,8 @@ impl<'source> Lexer<'source> {
 
     fn scan(&mut self, byte: u8) -> TokenKind {
         match byte {
-            byte if is_space(byte) => {
-                while self.peek(0).is_some_and(is_space) {
+            byte if is_whitespace(byte) => {
+                while self.peek(0).is_some_and(is_whitespace) {
                     self.cursor += 1;
                 }
 
@@ -217,7 +213,9 @@ impl<'source> Lexer<'source> {
     fn assignment(&mut self, plain: Symbol, paired: Symbol) -> TokenKind {
         self.cursor += 1;
 
-        TokenKind::Symbol(if self.consume(b'=') { paired } else { plain })
+        let symbol = if self.consume(b'=') { paired } else { plain };
+
+        TokenKind::Symbol(symbol)
     }
 
     fn name_body(&mut self) {
@@ -350,13 +348,16 @@ impl<'source> Lexer<'source> {
             Some(b'z') => {
                 self.cursor += 1;
 
-                while self.peek(0).is_some_and(is_space) {
+                while self.peek(0).is_some_and(is_whitespace) {
                     self.cursor += 1;
                 }
             }
 
             None | Some(0) => {}
-            Some(_) => self.cursor += 1,
+
+            Some(_) => {
+                self.cursor += 1;
+            }
         }
     }
 
@@ -372,8 +373,14 @@ impl<'source> Lexer<'source> {
                 }
 
                 None | Some(0 | b'\r' | b'\n') => return TokenKind::MalformedString,
-                Some(b'\\') => self.escape(),
-                Some(_) => self.cursor += 1,
+
+                Some(b'\\') => {
+                    self.escape();
+                }
+
+                Some(_) => {
+                    self.cursor += 1;
+                }
             }
         }
     }
@@ -393,7 +400,9 @@ impl<'source> Lexer<'source> {
                     self.cursor += 3;
                 }
 
-                Some(b'\\') => self.escape(),
+                Some(b'\\') => {
+                    self.escape();
+                }
 
                 Some(b'{') => {
                     self.braces.push(Brace::Interpolation);
@@ -406,7 +415,9 @@ impl<'source> Lexer<'source> {
                     return continuation;
                 }
 
-                Some(_) => self.cursor += 1,
+                Some(_) => {
+                    self.cursor += 1;
+                }
             }
         }
     }
@@ -465,10 +476,15 @@ impl Iterator for Lexer<'_> {
 
 impl FusedIterator for Lexer<'_> {}
 
+enum Brace {
+    Normal,
+    Interpolation,
+}
+
 fn is_name_start(byte: u8) -> bool {
     byte.is_ascii_alphabetic() || byte == b'_'
 }
 
-fn is_space(byte: u8) -> bool {
+fn is_whitespace(byte: u8) -> bool {
     matches!(byte, b' ' | b'\t' | b'\r' | b'\n' | 0x0b | 0x0c)
 }

@@ -1,7 +1,7 @@
 use std::str::{self, Utf8Error};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Reserved Luau keywords.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Keyword {
     /// `and`.
     And,
@@ -67,8 +67,8 @@ pub enum Keyword {
     While,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Luau punctuation and operators.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Symbol {
     /// `(`.
     LeftParenthesis,
@@ -200,8 +200,8 @@ pub enum Symbol {
     Tilde,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Lexical token categories.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum TokenKind {
     /// End of input.
     EndOfFile,
@@ -270,8 +270,8 @@ pub enum TokenKind {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Half-open byte range in the source.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Span {
     /// Inclusive byte offset.
     pub start: usize,
@@ -282,18 +282,20 @@ pub struct Span {
 
 impl Span {
     /// Whether the range contains no bytes.
+    #[must_use]
     pub fn is_empty(self) -> bool {
         self.start == self.end
     }
 
     /// Returns the source bytes in this range.
+    #[must_use]
     pub fn bytes(self, source: &[u8]) -> &[u8] {
         &source[self.start..self.end]
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Token category and source range.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Token {
     /// Lexical category.
     pub kind: TokenKind,
@@ -304,6 +306,7 @@ pub struct Token {
 
 impl Token {
     /// Returns the token’s source bytes.
+    #[must_use]
     pub fn bytes(self, source: &[u8]) -> &[u8] {
         self.span.bytes(source)
     }
@@ -317,6 +320,7 @@ impl Token {
     }
 
     /// Returns the range used when reporting a lexical error.
+    #[must_use]
     pub fn diagnostic_span(self) -> Span {
         if self.kind == TokenKind::InvalidInterpolationDoubleBrace {
             Span {

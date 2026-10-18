@@ -18,6 +18,105 @@ impl Parser<'_> {
         self.annotation_context(true, false)
     }
 
+    /// Parses generic parameters, permitting defaults when requested.
+    pub fn generics(&mut self, defaults: bool) -> NodeIndex {
+        let start = self.position();
+
+        let Some(opening) = self.consume(TokenKind::Symbol(Symbol::LessThan)) else {
+            return self.missing("generics", self.error("expected generics"));
+        };
+
+        let mut parameters = Vec::new();
+        let mut packs = false;
+        let mut defaulted = false;
+
+        loop {
+            let parameter_start = self.position();
+            let name = self.name();
+            let ellipsis = self.consume(TokenKind::Symbol(Symbol::Ellipsis));
+
+            if packs && ellipsis.is_none() {
+                self.diagnose(self.error("type parameters must precede packs"));
+            }
+
+            packs |= ellipsis.is_some();
+            let assignment = self.consume(TokenKind::Symbol(Symbol::Assignment));
+
+            let default = if assignment.is_some() {
+                if !defaults {
+                    self.diagnose(self.error("generic defaults are only allowed in type aliases"));
+                }
+
+                defaulted = true;
+
+                let default = if ellipsis.is_some() {
+                    self.type_argument()
+                } else {
+                    self.annotation()
+                };
+
+                if ellipsis.is_some()
+                    && !matches!(
+                        self.node(default).kind,
+                        NodeKind::TypePack { .. }
+                            | NodeKind::GenericPack { .. }
+                            | NodeKind::VariadicType { .. }
+                            | NodeKind::Missing { .. }
+                    )
+                {
+                    self.diagnose(self.error("expected type pack default"));
+                }
+
+                Some(default)
+            } else if defaulted {
+                Some(self.missing("generic default", self.error("expected generic default")))
+            } else {
+                None
+            };
+
+            let node = self.append_node(
+                parameter_start,
+                NodeKind::Generic {
+                    name,
+                    ellipsis,
+                    assignment,
+                    default,
+                },
+            );
+
+            let separator = self.consume(TokenKind::Symbol(Symbol::Comma));
+            parameters.push(ListEntry { node, separator });
+
+            if separator.is_none() {
+                break;
+            }
+        }
+
+        let closing = self.expect(
+            TokenKind::Symbol(Symbol::GreaterThan),
+            "expected closing generics",
+        );
+
+        let parameters = self.append_list(parameters);
+
+        self.append_node(
+            start,
+            NodeKind::Generics {
+                opening,
+                parameters,
+                closing,
+            },
+        )
+    }
+
+    /// Parses a table type field, optionally in a declaration context.
+    pub fn type_field(&mut self, declaration: bool) -> NodeIndex {
+        let start = self.position();
+        let access = self.access();
+
+        self.type_field_contents(start, access, declaration)
+    }
+
     fn annotation_context(&mut self, allow_pack: bool, declaration: bool) -> NodeIndex {
         self.required("annotation", |parser| {
             if parser.depth >= 128 {
@@ -325,97 +424,6 @@ impl Parser<'_> {
         )
     }
 
-    /// Parses generic parameters, permitting defaults when requested.
-    pub fn generics(&mut self, defaults: bool) -> NodeIndex {
-        let start = self.position();
-
-        let Some(opening) = self.consume(TokenKind::Symbol(Symbol::LessThan)) else {
-            return self.missing("generics", self.error("expected generics"));
-        };
-
-        let mut parameters = Vec::new();
-        let mut packs = false;
-        let mut defaulted = false;
-
-        loop {
-            let begin = self.position();
-            let name = self.name();
-            let ellipsis = self.consume(TokenKind::Symbol(Symbol::Ellipsis));
-
-            if packs && ellipsis.is_none() {
-                self.diagnose(self.error("type parameters must precede packs"));
-            }
-
-            packs |= ellipsis.is_some();
-            let assignment = self.consume(TokenKind::Symbol(Symbol::Assignment));
-
-            let default = if assignment.is_some() {
-                if !defaults {
-                    self.diagnose(self.error("generic defaults are only allowed in type aliases"));
-                }
-
-                defaulted = true;
-
-                let default = if ellipsis.is_some() {
-                    self.type_argument()
-                } else {
-                    self.annotation()
-                };
-
-                if ellipsis.is_some()
-                    && !matches!(
-                        self.node(default).kind,
-                        NodeKind::TypePack { .. }
-                            | NodeKind::GenericPack { .. }
-                            | NodeKind::VariadicType { .. }
-                            | NodeKind::Missing { .. }
-                    )
-                {
-                    self.diagnose(self.error("expected type pack default"));
-                }
-
-                Some(default)
-            } else if defaulted {
-                Some(self.missing("generic default", self.error("expected generic default")))
-            } else {
-                None
-            };
-
-            let node = self.append_node(
-                begin,
-                NodeKind::Generic {
-                    name,
-                    ellipsis,
-                    assignment,
-                    default,
-                },
-            );
-
-            let separator = self.consume(TokenKind::Symbol(Symbol::Comma));
-            parameters.push(ListEntry { node, separator });
-
-            if separator.is_none() {
-                break;
-            }
-        }
-
-        let closing = self.expect(
-            TokenKind::Symbol(Symbol::GreaterThan),
-            "expected closing generics",
-        );
-
-        let parameters = self.append_list(parameters);
-
-        self.append_node(
-            start,
-            NodeKind::Generics {
-                opening,
-                parameters,
-                closing,
-            },
-        )
-    }
-
     fn function_type(&mut self, allow_pack: bool, attributes: Option<NodeIndex>) -> NodeIndex {
         let start = attributes.map_or_else(|| self.position(), |node| self.node(node).tokens.start);
 
@@ -522,7 +530,7 @@ impl Parser<'_> {
 
         if !self.at(TokenKind::Symbol(Symbol::RightParenthesis)) {
             loop {
-                let begin = self.position();
+                let parameter_start = self.position();
                 let pack = self.at_pack();
 
                 let node = if pack {
@@ -536,7 +544,7 @@ impl Parser<'_> {
                     let annotation = self.annotation();
 
                     self.append_node(
-                        begin,
+                        parameter_start,
                         NodeKind::TypeParameter {
                             name,
                             colon,
@@ -583,7 +591,7 @@ impl Parser<'_> {
         let mut indexed = false;
 
         while !self.at(TokenKind::Symbol(Symbol::RightBrace)) && !self.at(TokenKind::EndOfFile) {
-            let begin = self.position();
+            let field_start = self.position();
             let access = self.access();
 
             if fields.is_empty()
@@ -596,7 +604,7 @@ impl Parser<'_> {
                 break;
             }
 
-            let node = self.type_field_contents(begin, access, declaration);
+            let node = self.type_field_contents(field_start, access, declaration);
 
             if matches!(self.node(node).kind, NodeKind::TypeIndexer { .. }) {
                 if indexed {
@@ -615,7 +623,7 @@ impl Parser<'_> {
 
             fields.push(ListEntry { node, separator });
 
-            if separator.is_none() || self.position() == begin {
+            if separator.is_none() || self.position() == field_start {
                 break;
             }
         }
@@ -637,14 +645,6 @@ impl Parser<'_> {
                 closing,
             },
         )
-    }
-
-    /// Parses a table type field, optionally in a declaration context.
-    pub fn type_field(&mut self, declaration: bool) -> NodeIndex {
-        let start = self.position();
-        let access = self.access();
-
-        self.type_field_contents(start, access, declaration)
     }
 
     fn type_field_contents(

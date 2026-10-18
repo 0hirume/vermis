@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::str;
 
 use super::Parser;
 use crate::token::{Keyword, Symbol, TokenKind};
@@ -78,7 +79,7 @@ impl Parser<'_> {
 
         let node = match self.current().kind {
             TokenKind::Number => {
-                if !valid_number(self.current().bytes(self.source)) {
+                if !is_valid_number(self.current().bytes(self.source)) {
                     self.diagnose(self.error("malformed number"));
                 }
 
@@ -171,7 +172,7 @@ impl Parser<'_> {
 
     fn postfix(&mut self, start: TokenIndex, mut left: NodeIndex) -> Result<NodeIndex, Diagnostic> {
         loop {
-            let cursor = self.position();
+            let position = self.position();
 
             left = match self.current().kind {
                 TokenKind::Symbol(Symbol::Dot) => {
@@ -265,7 +266,7 @@ impl Parser<'_> {
                 _ => break,
             };
 
-            if self.position() == cursor {
+            if self.position() == position {
                 break;
             }
         }
@@ -356,7 +357,7 @@ impl Parser<'_> {
         let mut fields = Vec::new();
 
         while !self.at(TokenKind::Symbol(Symbol::RightBrace)) && !self.at(TokenKind::EndOfFile) {
-            let begin = self.position();
+            let field_start = self.position();
             let field_opening = self.consume(TokenKind::Symbol(Symbol::LeftBracket));
 
             let (key, closing, assignment) = if field_opening.is_some() {
@@ -387,7 +388,7 @@ impl Parser<'_> {
             let value = self.expression();
 
             let node = self.append_node(
-                begin,
+                field_start,
                 NodeKind::TableField {
                     opening: field_opening,
                     key,
@@ -403,7 +404,7 @@ impl Parser<'_> {
 
             fields.push(ListEntry { node, separator });
 
-            if self.position() == begin {
+            if self.position() == field_start {
                 break;
             }
 
@@ -469,18 +470,15 @@ impl Parser<'_> {
         let start = self.position();
         let mut attributes = Vec::new();
 
-        while matches!(
-            self.current().kind,
-            TokenKind::Attribute | TokenKind::Symbol(Symbol::AttributeOpen)
-        ) {
-            let begin = self.position();
+        while self.at_attributes() {
+            let attribute_start = self.position();
 
             let node = if self.at(TokenKind::Attribute) {
                 let token = self.take();
-                let name = self.append_node(begin, NodeKind::Name { token });
+                let name = self.append_node(attribute_start, NodeKind::Name { token });
 
                 self.append_node(
-                    begin,
+                    attribute_start,
                     NodeKind::Attribute {
                         name,
                         arguments: None,
@@ -491,7 +489,7 @@ impl Parser<'_> {
                 let mut entries = Vec::new();
 
                 loop {
-                    let attribute_start = self.position();
+                    let entry_start = self.position();
                     let name = self.name();
 
                     let arguments = if matches!(
@@ -506,7 +504,7 @@ impl Parser<'_> {
                     };
 
                     let node =
-                        self.append_node(attribute_start, NodeKind::Attribute { name, arguments });
+                        self.append_node(entry_start, NodeKind::Attribute { name, arguments });
 
                     let separator = self.consume(TokenKind::Symbol(Symbol::Comma));
                     entries.push(ListEntry { node, separator });
@@ -524,7 +522,7 @@ impl Parser<'_> {
                 let attributes = self.append_list(entries);
 
                 self.append_node(
-                    begin,
+                    attribute_start,
                     NodeKind::AttributeGroup {
                         opening,
                         attributes,
@@ -544,10 +542,18 @@ impl Parser<'_> {
         self.append_node(start, NodeKind::Attributes { attributes })
     }
 
+    pub(super) fn at_attributes(&self) -> bool {
+        matches!(
+            self.current().kind,
+            TokenKind::Attribute | TokenKind::Symbol(Symbol::AttributeOpen)
+        )
+    }
+
     pub(super) fn string(&mut self) -> NodeIndex {
         let start = self.position();
 
-        if self.at(TokenKind::QuotedString) && !valid_escapes(self.current().bytes(self.source)) {
+        if self.at(TokenKind::QuotedString) && !has_valid_escapes(self.current().bytes(self.source))
+        {
             self.diagnose(self.error("malformed string escape"));
         }
 
@@ -561,7 +567,7 @@ impl Parser<'_> {
         let mut segments = Vec::new();
 
         loop {
-            let begin = self.position();
+            let segment_start = self.position();
             let kind = self.current().kind;
 
             let ending = matches!(
@@ -574,20 +580,20 @@ impl Parser<'_> {
                 | TokenKind::InterpolatedStringMiddle
                 | TokenKind::InterpolatedStringEnd
                 | TokenKind::InterpolatedStringSimple => {
-                    if !valid_escapes(self.current().bytes(self.source)) {
+                    if !has_valid_escapes(self.current().bytes(self.source)) {
                         self.diagnose(self.error("malformed interpolation escape"));
                     }
 
                     let token = self.take();
 
-                    self.append_node(begin, NodeKind::String { token })
+                    self.append_node(segment_start, NodeKind::String { token })
                 }
 
                 TokenKind::InvalidInterpolationDoubleBrace | TokenKind::MalformedString => {
                     self.diagnose(self.error("expected interpolation segment"));
                     self.take();
 
-                    self.append_node(begin, NodeKind::Error)
+                    self.append_node(segment_start, NodeKind::Error)
                 }
 
                 _ => {
@@ -654,20 +660,16 @@ fn priority(kind: TokenKind) -> Option<(u8, u8)> {
     })
 }
 
-fn valid_number(bytes: &[u8]) -> bool {
+fn is_valid_number(bytes: &[u8]) -> bool {
     let normalized = if bytes.contains(&b'_') {
-        Cow::Owned(
-            bytes
-                .iter()
-                .copied()
-                .filter(|byte| *byte != b'_')
-                .collect::<Vec<_>>(),
-        )
+        let normalized: Vec<_> = bytes.iter().copied().filter(|byte| *byte != b'_').collect();
+
+        Cow::Owned(normalized)
     } else {
         Cow::Borrowed(bytes)
     };
 
-    let Ok(text) = std::str::from_utf8(&normalized) else {
+    let Ok(text) = str::from_utf8(&normalized) else {
         return false;
     };
 
@@ -697,7 +699,7 @@ fn valid_number(bytes: &[u8]) -> bool {
     }
 }
 
-fn valid_escapes(bytes: &[u8]) -> bool {
+fn has_valid_escapes(bytes: &[u8]) -> bool {
     let bytes = &bytes[1..bytes.len() - 1];
     let mut cursor = 0;
 
@@ -709,7 +711,7 @@ fn valid_escapes(bytes: &[u8]) -> bool {
 
         cursor += 1;
 
-        let Some(&escape) = bytes.get(cursor) else {
+        let Some(escape) = bytes.get(cursor).copied() else {
             return false;
         };
 
@@ -735,17 +737,17 @@ fn valid_escapes(bytes: &[u8]) -> bool {
                 }
 
                 cursor += 1;
-                let begin = cursor;
+                let start = cursor;
 
                 while bytes.get(cursor).is_some_and(u8::is_ascii_hexdigit) {
                     cursor += 1;
                 }
 
-                if begin == cursor || cursor - begin > 16 || bytes.get(cursor) != Some(&b'}') {
+                if start == cursor || cursor - start > 16 || bytes.get(cursor) != Some(&b'}') {
                     return false;
                 }
 
-                let Ok(digits) = std::str::from_utf8(&bytes[begin..cursor]) else {
+                let Ok(digits) = str::from_utf8(&bytes[start..cursor]) else {
                     return false;
                 };
 
@@ -760,8 +762,7 @@ fn valid_escapes(bytes: &[u8]) -> bool {
                 let mut value = u16::from(escape - b'0');
 
                 for _ in 0..2 {
-                    let Some(&digit) = bytes.get(cursor).filter(|digit| digit.is_ascii_digit())
-                    else {
+                    let Some(digit) = bytes.get(cursor).copied().filter(u8::is_ascii_digit) else {
                         break;
                     };
 

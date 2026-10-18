@@ -301,7 +301,7 @@ impl Parser<'_> {
             NodeKind::Call { .. } | NodeKind::MethodCall { .. }
         ) && !self.at(TokenKind::Symbol(Symbol::Comma))
             && !self.at(TokenKind::Symbol(Symbol::Assignment))
-            && !compound(self.current().kind)
+            && !is_compound_assignment(self.current().kind)
         {
             return Ok(self.append_node(start, NodeKind::CallStatement { call: first }));
         }
@@ -320,7 +320,9 @@ impl Parser<'_> {
             node = self.required("assignment target", Self::primary);
         }
 
-        if !self.at(TokenKind::Symbol(Symbol::Assignment)) && !compound(self.current().kind) {
+        if !self.at(TokenKind::Symbol(Symbol::Assignment))
+            && !is_compound_assignment(self.current().kind)
+        {
             return Err(self.error("expected assignment or call"));
         }
 
@@ -339,7 +341,7 @@ impl Parser<'_> {
             }
         }
 
-        if compound(self.current().kind) {
+        if is_compound_assignment(self.current().kind) {
             if targets.len() != 1 {
                 return Err(self.error("compound assignment requires one target"));
             }
@@ -376,14 +378,14 @@ impl Parser<'_> {
         let mut branches = Vec::new();
 
         loop {
-            let begin = self.position();
+            let branch_start = self.position();
             let keyword = self.take();
             let condition = self.condition();
             let then = self.expect(TokenKind::Keyword(Keyword::Then), "expected then");
             let body = self.block(&[Keyword::ElseIf, Keyword::Else, Keyword::End]);
 
             let node = self.append_node(
-                begin,
+                branch_start,
                 NodeKind::Branch {
                     keyword,
                     condition,
@@ -403,11 +405,11 @@ impl Parser<'_> {
         }
 
         let otherwise = if self.at(TokenKind::Keyword(Keyword::Else)) {
-            let begin = self.position();
+            let otherwise_start = self.position();
             let keyword = self.take();
             let body = self.block(&[Keyword::End]);
 
-            Some(self.append_node(begin, NodeKind::Else { keyword, body }))
+            Some(self.append_node(otherwise_start, NodeKind::Else { keyword, body }))
         } else {
             None
         };
@@ -430,9 +432,11 @@ impl Parser<'_> {
         let keyword = self.take();
         let condition = self.expression();
         let do_keyword = self.expect(TokenKind::Keyword(Keyword::Do), "expected do");
+
         self.loop_depth += 1;
         let body = self.block(&[Keyword::End]);
         self.loop_depth -= 1;
+
         let end = self.expect(TokenKind::Keyword(Keyword::End), "expected end");
 
         self.append_node(
@@ -450,9 +454,11 @@ impl Parser<'_> {
     fn repeat_statement(&mut self) -> NodeIndex {
         let start = self.position();
         let keyword = self.take();
+
         self.loop_depth += 1;
         let body = self.block(&[Keyword::Until]);
         self.loop_depth -= 1;
+
         let until = self.expect(TokenKind::Keyword(Keyword::Until), "expected until");
         let condition = self.expression();
 
@@ -490,7 +496,7 @@ impl Parser<'_> {
 
     fn numeric_for(
         &mut self,
-        begin: TokenIndex,
+        node_start: TokenIndex,
         keyword: TokenIndex,
         binding: NodeIndex,
     ) -> NodeIndex {
@@ -504,13 +510,15 @@ impl Parser<'_> {
         let step_separator = self.consume(TokenKind::Symbol(Symbol::Comma));
         let step = step_separator.map(|_| self.expression());
         let do_keyword = self.expect(TokenKind::Keyword(Keyword::Do), "expected do");
+
         self.loop_depth += 1;
         let body = self.block(&[Keyword::End]);
         self.loop_depth -= 1;
+
         let end_keyword = self.expect(TokenKind::Keyword(Keyword::End), "expected end");
 
         self.append_node(
-            begin,
+            node_start,
             NodeKind::NumericFor {
                 keyword,
                 binding,
@@ -531,10 +539,10 @@ impl Parser<'_> {
         &mut self,
         start: TokenIndex,
         keyword: TokenIndex,
-        first: NodeIndex,
+        binding: NodeIndex,
     ) -> NodeIndex {
         let mut bindings = Vec::new();
-        let mut node = first;
+        let mut node = binding;
 
         loop {
             let separator = self.consume(TokenKind::Symbol(Symbol::Comma));
@@ -551,9 +559,11 @@ impl Parser<'_> {
         let in_keyword = self.expect(TokenKind::Keyword(Keyword::In), "expected in");
         let values = self.expressions();
         let do_keyword = self.expect(TokenKind::Keyword(Keyword::Do), "expected do");
+
         self.loop_depth += 1;
         let body = self.block(&[Keyword::End]);
         self.loop_depth -= 1;
+
         let end = self.expect(TokenKind::Keyword(Keyword::End), "expected end");
 
         self.append_node(
@@ -574,7 +584,7 @@ impl Parser<'_> {
         let start = self.position();
         let keyword = self.take();
 
-        let values = if self.block_end() || self.at(TokenKind::Symbol(Symbol::Semicolon)) {
+        let values = if self.at_block_end() || self.at(TokenKind::Symbol(Symbol::Semicolon)) {
             self.append_list([])
         } else {
             self.expressions()
@@ -644,10 +654,12 @@ impl Parser<'_> {
     ) -> Result<NodeIndex, Diagnostic> {
         self.nested(|parser| {
             let (generics, parameters, returns) = parser.signature(false, false);
+
             let loop_depth = parser.loop_depth;
             parser.loop_depth = 0;
             let body = Some(parser.block(&[Keyword::End]));
             parser.loop_depth = loop_depth;
+
             let end = parser.expect(TokenKind::Keyword(Keyword::End), "expected end");
 
             Ok(parser.append_node(
@@ -723,7 +735,7 @@ impl Parser<'_> {
 
         if !self.at(TokenKind::Symbol(Symbol::RightParenthesis)) {
             loop {
-                let begin = self.position();
+                let parameter_start = self.position();
                 let variadic = self.at(TokenKind::Symbol(Symbol::Ellipsis));
 
                 let node = if variadic {
@@ -749,7 +761,7 @@ impl Parser<'_> {
                     }
 
                     self.append_node(
-                        begin,
+                        parameter_start,
                         NodeKind::Variadic {
                             ellipsis,
                             colon,
@@ -863,11 +875,11 @@ impl Parser<'_> {
         let keyword = self.take();
 
         let declaration = if self.at(TokenKind::Keyword(Keyword::Function)) {
-            let begin = self.position();
+            let function_start = self.position();
             let function_keyword = Some(self.take());
             let name = Some(self.name());
 
-            self.function(begin, None, None, function_keyword, name)?
+            self.function(function_start, None, None, function_keyword, name)?
         } else {
             if attributes.is_some() {
                 return Err(self.error("expected exported function after attributes"));
@@ -959,13 +971,13 @@ impl Parser<'_> {
                 return Err(self.error("expected declared function after attributes"));
             }
 
-            let begin = self.position();
+            let binding_start = self.position();
             let name = self.name();
             let colon = self.expect(TokenKind::Symbol(Symbol::Colon), "expected declared type");
             let annotation = Some(self.declaration_annotation());
 
             self.append_node(
-                begin,
+                binding_start,
                 NodeKind::Binding {
                     name,
                     colon,
@@ -1017,7 +1029,7 @@ impl Parser<'_> {
         let name = self.name();
 
         let extends = if self.named(b"extends") {
-            let begin = self.position();
+            let extends_start = self.position();
             let keyword = self.take();
 
             let superclass = if external {
@@ -1027,7 +1039,7 @@ impl Parser<'_> {
             };
 
             Some(self.append_node(
-                begin,
+                extends_start,
                 NodeKind::Extends {
                     keyword,
                     superclass,
@@ -1052,18 +1064,18 @@ impl Parser<'_> {
         let mut members = Vec::new();
         let mut indexed = false;
 
-        while !self.block_end() {
-            let begin = self.position();
-            let nodes = self.nodes.len();
-            let lists = self.lists.len();
+        while !self.at_block_end() {
+            let member_start = self.position();
+            let node_count = self.nodes.len();
+            let list_count = self.lists.len();
 
             let node = match self.nested(|parser| parser.class_member(external)) {
                 Ok(node) => node,
 
                 Err(diagnostic) => {
-                    self.nodes.truncate(nodes);
-                    self.lists.truncate(lists);
-                    let node = self.missing_at(begin, "class member", diagnostic);
+                    self.nodes.truncate(node_count);
+                    self.lists.truncate(list_count);
+                    let node = self.missing_at(member_start, "class member", diagnostic);
 
                     members.push(ListEntry {
                         node,
@@ -1071,7 +1083,7 @@ impl Parser<'_> {
                     });
 
                     self.recover(
-                        begin,
+                        member_start,
                         &[
                             TokenKind::Keyword(Keyword::End),
                             TokenKind::Keyword(Keyword::Else),
@@ -1096,7 +1108,7 @@ impl Parser<'_> {
             let separator = self.consume(TokenKind::Symbol(Symbol::Semicolon));
             members.push(ListEntry { node, separator });
 
-            if self.position() == begin {
+            if self.position() == member_start {
                 let token = self.take();
                 let node = self.append_node(token, NodeKind::Error);
 
@@ -1242,16 +1254,9 @@ impl Parser<'_> {
 
         receiver
     }
-
-    fn at_attributes(&self) -> bool {
-        matches!(
-            self.current().kind,
-            TokenKind::Attribute | TokenKind::Symbol(Symbol::AttributeOpen)
-        )
-    }
 }
 
-fn compound(kind: TokenKind) -> bool {
+fn is_compound_assignment(kind: TokenKind) -> bool {
     matches!(
         kind,
         TokenKind::Symbol(
@@ -1268,7 +1273,7 @@ fn compound(kind: TokenKind) -> bool {
 }
 
 fn continues_expression(kind: TokenKind) -> bool {
-    compound(kind)
+    is_compound_assignment(kind)
         || matches!(
             kind,
             TokenKind::QuotedString

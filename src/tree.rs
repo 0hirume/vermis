@@ -1,10 +1,11 @@
-use std::{num::NonZeroUsize, ops::Range};
+use std::num::NonZeroUsize;
+use std::ops::Range;
 
 use crate::token::{Span, Token};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(transparent)]
 /// Index into a tree’s node storage.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(transparent)]
 pub struct NodeIndex(NonZeroUsize);
 
 impl NodeIndex {
@@ -12,6 +13,7 @@ impl NodeIndex {
     ///
     /// # Panics
     /// Panics if `index` is `usize::MAX`.
+    #[must_use]
     pub fn new(index: usize) -> Self {
         Self(
             NonZeroUsize::MIN
@@ -21,14 +23,15 @@ impl NodeIndex {
     }
 
     /// Returns the zero-based position.
+    #[must_use]
     pub fn get(self) -> usize {
         self.0.get() - 1
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(transparent)]
 /// Index into a tree’s token storage.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(transparent)]
 pub struct TokenIndex(NonZeroUsize);
 
 impl TokenIndex {
@@ -36,6 +39,7 @@ impl TokenIndex {
     ///
     /// # Panics
     /// Panics if `index` is `usize::MAX`.
+    #[must_use]
     pub fn new(index: usize) -> Self {
         Self(
             NonZeroUsize::MIN
@@ -45,20 +49,21 @@ impl TokenIndex {
     }
 
     /// Returns the zero-based position.
+    #[must_use]
     pub fn get(self) -> usize {
         self.0.get() - 1
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
 /// Half-open range in a tree’s list storage.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NodeList(
     /// List entry range.
     pub Range<usize>,
 );
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Node and its trailing separator.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct ListEntry {
     /// List element node.
     pub node: NodeIndex,
@@ -67,8 +72,8 @@ pub struct ListEntry {
     pub separator: Option<TokenIndex>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
 /// Syntax node with source and token ranges.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Node {
     /// Named syntax fields.
     pub kind: NodeKind,
@@ -80,8 +85,8 @@ pub struct Node {
     pub tokens: Range<TokenIndex>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
 /// Named syntax fields; optional fields may be absent or missing during recovery.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NodeKind {
     /// Complete source file.
     Root {
@@ -825,8 +830,8 @@ pub enum NodeKind {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
 /// Parse error and its source range.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Diagnostic {
     /// Source byte range.
     pub span: Span,
@@ -835,8 +840,8 @@ pub struct Diagnostic {
     pub message: &'static str,
 }
 
-#[derive(Debug)]
 /// Lossless indexed syntax over borrowed source bytes.
+#[derive(Debug)]
 pub struct Tree<'source> {
     /// Borrowed source bytes.
     pub source: &'source [u8],
@@ -859,26 +864,31 @@ pub struct Tree<'source> {
 
 impl<'source> Tree<'source> {
     /// Returns a node by index.
+    #[must_use]
     pub fn node(&self, index: NodeIndex) -> &Node {
         &self.nodes[index.get()]
     }
 
     /// Returns a token by index.
+    #[must_use]
     pub fn token(&self, index: TokenIndex) -> &Token {
         &self.tokens[index.get()]
     }
 
     /// Returns the entries in a node list.
+    #[must_use]
     pub fn list(&self, list: &NodeList) -> &[ListEntry] {
         &self.lists[list.0.clone()]
     }
 
     /// Returns a node’s source bytes.
+    #[must_use]
     pub fn text(&self, index: NodeIndex) -> &'source [u8] {
         self.node(index).span.bytes(self.source)
     }
 
     /// Returns a node's immediate syntax children in source order.
+    #[must_use]
     pub fn children(&self, index: NodeIndex) -> Vec<NodeIndex> {
         let kind = &self.node(index).kind;
         let mut children = Vec::new();
@@ -901,7 +911,9 @@ impl<'source> Tree<'source> {
             | NodeKind::Do { .. }
             | NodeKind::Return { .. }
             | NodeKind::Export { .. }
-            | NodeKind::Declaration { .. } => self.statement_children(kind, &mut children),
+            | NodeKind::Declaration { .. } => {
+                self.statement_children(kind, &mut children);
+            }
 
             NodeKind::Function { .. }
             | NodeKind::FunctionName { .. }
@@ -913,7 +925,9 @@ impl<'source> Tree<'source> {
             | NodeKind::AttributeGroup { .. }
             | NodeKind::Attribute { .. }
             | NodeKind::Generics { .. }
-            | NodeKind::Generic { .. } => self.function_children(kind, &mut children),
+            | NodeKind::Generic { .. } => {
+                self.function_children(kind, &mut children);
+            }
 
             NodeKind::Arguments { .. }
             | NodeKind::Unary { .. }
@@ -929,7 +943,9 @@ impl<'source> Tree<'source> {
             | NodeKind::Conditional { .. }
             | NodeKind::Interpolation { .. }
             | NodeKind::Table { .. }
-            | NodeKind::TableField { .. } => self.expression_children(kind, &mut children),
+            | NodeKind::TableField { .. } => {
+                self.expression_children(kind, &mut children);
+            }
 
             NodeKind::TypeAlias { .. }
             | NodeKind::Class { .. }
@@ -949,7 +965,9 @@ impl<'source> Tree<'source> {
             | NodeKind::TypeUnion { .. }
             | NodeKind::TypeIntersection { .. }
             | NodeKind::TypeOptional { .. }
-            | NodeKind::TypeOf { .. } => self.type_children(kind, &mut children),
+            | NodeKind::TypeOf { .. } => {
+                self.type_children(kind, &mut children);
+            }
 
             NodeKind::Error
             | NodeKind::Missing { .. }
@@ -967,13 +985,12 @@ impl<'source> Tree<'source> {
 
     fn statement_children(&self, kind: &NodeKind, children: &mut Vec<NodeIndex>) {
         match kind {
-            NodeKind::Root { block, .. } => children.push(*block),
+            NodeKind::Root { block, .. } => {
+                children.push(*block);
+            }
 
-            NodeKind::Block { statements }
-            | NodeKind::Return {
-                values: statements, ..
-            } => {
-                children.extend(self.list(statements).iter().map(|entry| entry.node));
+            NodeKind::Block { statements: list } | NodeKind::Return { values: list, .. } => {
+                children.extend(self.list(list).iter().map(|entry| entry.node));
             }
 
             NodeKind::Local {
@@ -999,7 +1016,9 @@ impl<'source> Tree<'source> {
                 children.extend([*target, *value]);
             }
 
-            NodeKind::CallStatement { call } => children.push(*call),
+            NodeKind::CallStatement { call } => {
+                children.push(*call);
+            }
 
             NodeKind::If {
                 branches,
@@ -1015,13 +1034,19 @@ impl<'source> Tree<'source> {
             }
             | NodeKind::While {
                 condition, body, ..
-            } => children.extend([*condition, *body]),
+            } => {
+                children.extend([*condition, *body]);
+            }
 
-            NodeKind::Else { body, .. } | NodeKind::Do { body, .. } => children.push(*body),
+            NodeKind::Else { body, .. } | NodeKind::Do { body, .. } => {
+                children.push(*body);
+            }
 
             NodeKind::Repeat {
                 body, condition, ..
-            } => children.extend([*body, *condition]),
+            } => {
+                children.extend([*body, *condition]);
+            }
 
             NodeKind::NumericFor {
                 binding,
@@ -1061,8 +1086,13 @@ impl<'source> Tree<'source> {
                 children.push(*declaration);
             }
 
-            NodeKind::Declaration { declaration, .. } => children.push(*declaration),
-            _ => unreachable!("expected statement syntax"),
+            NodeKind::Declaration { declaration, .. } => {
+                children.push(*declaration);
+            }
+
+            _ => {
+                unreachable!("expected statement syntax");
+            }
         }
     }
 
@@ -1090,75 +1120,97 @@ impl<'source> Tree<'source> {
                 children.extend(*method);
             }
 
-            NodeKind::Parameters { parameters, .. }
-            | NodeKind::Attributes {
-                attributes: parameters,
+            NodeKind::Parameters {
+                parameters: list, ..
             }
+            | NodeKind::Attributes { attributes: list }
             | NodeKind::AttributeGroup {
-                attributes: parameters,
-                ..
+                attributes: list, ..
             }
-            | NodeKind::Generics { parameters, .. } => {
-                children.extend(self.list(parameters).iter().map(|entry| entry.node));
+            | NodeKind::Generics {
+                parameters: list, ..
+            } => {
+                children.extend(self.list(list).iter().map(|entry| entry.node));
             }
 
             NodeKind::Binding {
-                name, annotation, ..
+                name,
+                annotation: child,
+                ..
             }
             | NodeKind::Generic {
                 name,
-                default: annotation,
+                default: child,
                 ..
             }
             | NodeKind::Attribute {
                 name,
-                arguments: annotation,
+                arguments: child,
             } => {
                 children.push(*name);
+                children.extend(*child);
+            }
+
+            NodeKind::Returns { annotation, .. } => {
+                children.push(*annotation);
+            }
+
+            NodeKind::Variadic { annotation, .. } => {
                 children.extend(*annotation);
             }
 
-            NodeKind::Returns { annotation, .. } => children.push(*annotation),
-            NodeKind::Variadic { annotation, .. } => children.extend(*annotation),
-            _ => unreachable!("expected function syntax"),
+            _ => {
+                unreachable!("expected function syntax");
+            }
         }
     }
 
     fn expression_children(&self, kind: &NodeKind, children: &mut Vec<NodeIndex>) {
         match kind {
-            NodeKind::Arguments { values, .. }
-            | NodeKind::Interpolation { segments: values }
-            | NodeKind::Table { fields: values, .. } => {
-                children.extend(self.list(values).iter().map(|entry| entry.node));
+            NodeKind::Arguments { values: list, .. }
+            | NodeKind::Interpolation { segments: list }
+            | NodeKind::Table { fields: list, .. } => {
+                children.extend(self.list(list).iter().map(|entry| entry.node));
             }
 
-            NodeKind::Unary { operand, .. } => children.push(*operand),
+            NodeKind::Unary { operand, .. } => {
+                children.push(*operand);
+            }
 
-            NodeKind::Binary { left, right, .. }
+            NodeKind::Binary {
+                left: first_child,
+                right: second_child,
+                ..
+            }
             | NodeKind::Call {
-                callee: left,
-                arguments: right,
+                callee: first_child,
+                arguments: second_child,
             }
             | NodeKind::Index {
-                receiver: left,
-                key: right,
+                receiver: first_child,
+                key: second_child,
                 ..
             }
             | NodeKind::Instantiate {
-                expression: left,
-                arguments: right,
+                expression: first_child,
+                arguments: second_child,
             }
             | NodeKind::Assertion {
-                expression: left,
-                annotation: right,
+                expression: first_child,
+                annotation: second_child,
                 ..
-            } => children.extend([*left, *right]),
+            } => {
+                children.extend([*first_child, *second_child]);
+            }
 
-            NodeKind::Group { expression, .. }
+            NodeKind::Group {
+                expression: child, ..
+            }
             | NodeKind::InstantiationArguments {
-                arguments: expression,
-                ..
-            } => children.push(*expression),
+                arguments: child, ..
+            } => {
+                children.push(*child);
+            }
 
             NodeKind::MethodCall {
                 receiver,
@@ -1172,21 +1224,27 @@ impl<'source> Tree<'source> {
                 children.push(*arguments);
             }
 
-            NodeKind::Field { receiver, name, .. } => children.extend([*receiver, *name]),
+            NodeKind::Field { receiver, name, .. } => {
+                children.extend([*receiver, *name]);
+            }
 
             NodeKind::Conditional {
                 condition,
                 truthy,
                 falsy,
                 ..
-            } => children.extend([*condition, *truthy, *falsy]),
+            } => {
+                children.extend([*condition, *truthy, *falsy]);
+            }
 
             NodeKind::TableField { key, value, .. } => {
                 children.extend(*key);
                 children.push(*value);
             }
 
-            _ => unreachable!("expected expression syntax"),
+            _ => {
+                unreachable!("expected expression syntax");
+            }
         }
     }
 
@@ -1214,8 +1272,13 @@ impl<'source> Tree<'source> {
                 children.extend(self.list(members).iter().map(|entry| entry.node));
             }
 
-            NodeKind::Property { binding, .. } => children.push(*binding),
-            NodeKind::Extends { superclass, .. } => children.push(*superclass),
+            NodeKind::Property { binding, .. } => {
+                children.push(*binding);
+            }
+
+            NodeKind::Extends { superclass, .. } => {
+                children.push(*superclass);
+            }
 
             NodeKind::TypeName {
                 namespace,
@@ -1236,20 +1299,22 @@ impl<'source> Tree<'source> {
             }
 
             NodeKind::TypeField {
-                key: left,
-                annotation: right,
+                key: child,
+                annotation,
                 ..
             }
             | NodeKind::TypeIndexer {
-                key: left,
-                annotation: right,
+                key: child,
+                annotation,
                 ..
             }
             | NodeKind::TypeParameter {
-                name: left,
-                annotation: right,
+                name: child,
+                annotation,
                 ..
-            } => children.extend([*left, *right]),
+            } => {
+                children.extend([*child, *annotation]);
+            }
 
             NodeKind::TypeFunction {
                 attributes,
@@ -1265,13 +1330,17 @@ impl<'source> Tree<'source> {
 
             NodeKind::TypeGroup { annotation, .. }
             | NodeKind::VariadicType { annotation, .. }
-            | NodeKind::TypeOptional { annotation, .. } => children.push(*annotation),
+            | NodeKind::TypeOptional { annotation, .. } => {
+                children.push(*annotation);
+            }
 
             NodeKind::TypePack { types, .. } => {
                 children.extend(self.list(types).iter().map(|entry| entry.node));
             }
 
-            NodeKind::GenericPack { name, .. } => children.push(*name),
+            NodeKind::GenericPack { name, .. } => {
+                children.push(*name);
+            }
 
             NodeKind::TypeArguments { arguments, .. } => {
                 children.extend(self.list(arguments).iter().map(|entry| entry.node));
@@ -1283,8 +1352,13 @@ impl<'source> Tree<'source> {
                 children.push(*right);
             }
 
-            NodeKind::TypeOf { expression, .. } => children.push(*expression),
-            _ => unreachable!("expected type syntax"),
+            NodeKind::TypeOf { expression, .. } => {
+                children.push(*expression);
+            }
+
+            _ => {
+                unreachable!("expected type syntax");
+            }
         }
     }
 }

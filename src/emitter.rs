@@ -1,15 +1,14 @@
 //! Typed Luau output using existing syntax and fixed token kinds.
 
 use std::borrow::Cow;
+use std::{iter, ptr};
 
-use crate::{
-    lexer::Lexer,
-    token::{Keyword, Span, Symbol, TokenKind},
-    tree::{NodeIndex, TokenIndex, Tree},
-};
+use crate::lexer::Lexer;
+use crate::token::{Keyword, Span, Symbol, TokenKind};
+use crate::tree::{NodeIndex, TokenIndex, Tree};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Line ending used for emitted newlines.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum LineEnding {
     /// Line feed.
     LineFeed,
@@ -18,16 +17,10 @@ pub enum LineEnding {
     CarriageReturnLineFeed,
 }
 
-#[derive(Clone, Copy)]
-struct EmittedToken<'source> {
-    kind: TokenKind,
-    bytes: &'source [u8],
-}
-
 /// Builds Luau output from typed tokens and original syntax.
 pub struct Emitter<'source> {
     source: Option<&'source [u8]>,
-    matched: usize,
+    matched_bytes: usize,
     output: Vec<u8>,
     previous: Option<EmittedToken<'source>>,
     previous_source: Option<(&'source [u8], usize)>,
@@ -38,10 +31,11 @@ pub struct Emitter<'source> {
 
 impl<'source> Emitter<'source> {
     /// Creates an emitter with the requested line ending.
+    #[must_use]
     pub fn new(line_ending: LineEnding) -> Self {
         Self {
             source: None,
-            matched: 0,
+            matched_bytes: 0,
             output: Vec::new(),
             previous: None,
             previous_source: None,
@@ -52,6 +46,7 @@ impl<'source> Emitter<'source> {
     }
 
     /// Creates an emitter that borrows identical output from the original tree.
+    #[must_use]
     pub fn from_tree(tree: &Tree<'source>, line_ending: LineEnding) -> Self {
         Self {
             source: Some(tree.source),
@@ -84,7 +79,7 @@ impl<'source> Emitter<'source> {
             self.separated |= !bytes.is_empty();
 
             self.line_break_since_previous |=
-                bytes.iter().any(|&byte| matches!(byte, b'\r' | b'\n'));
+                bytes.iter().any(|byte| matches!(*byte, b'\r' | b'\n'));
         } else {
             self.append(token.kind, bytes, Some((tree.source, token.span)));
         }
@@ -113,23 +108,28 @@ impl<'source> Emitter<'source> {
 
     /// Emits a line ending.
     pub fn newline(&mut self) {
-        match self.line_ending {
-            LineEnding::LineFeed => self.write(b"\n"),
-            LineEnding::CarriageReturnLineFeed => self.write(b"\r\n"),
-        }
+        let bytes: &[u8] = match self.line_ending {
+            LineEnding::LineFeed => b"\n",
+            LineEnding::CarriageReturnLineFeed => b"\r\n",
+        };
 
+        self.write(bytes);
         self.separated = true;
         self.line_break_since_previous = true;
     }
 
     /// Returns the emitted bytes, borrowing unchanged source when available.
+    #[must_use]
     pub fn finish(self) -> Cow<'source, [u8]> {
         match self.source {
-            Some(source) if self.output.is_empty() && self.matched == source.len() => {
+            Some(source) if self.output.is_empty() && self.matched_bytes == source.len() => {
                 Cow::Borrowed(source)
             }
 
-            Some(source) if self.output.is_empty() => Cow::Owned(source[..self.matched].to_vec()),
+            Some(source) if self.output.is_empty() => {
+                Cow::Owned(source[..self.matched_bytes].to_vec())
+            }
+
             _ => Cow::Owned(self.output),
         }
     }
@@ -148,10 +148,11 @@ impl<'source> Emitter<'source> {
             if previous.kind == TokenKind::Comment && !self.line_break_since_previous {
                 self.newline();
             } else if !self.separated
-                && !source.is_some_and(|(bytes, span)| {
-                    self.previous_source
-                        .is_some_and(|(prior, end)| std::ptr::eq(prior, bytes) && end == span.start)
-                })
+                && !self.previous_source.zip(source).is_some_and(
+                    |((previous_source, previous_end), (source, span))| {
+                        ptr::eq(previous_source, source) && previous_end == span.start
+                    },
+                )
                 && could_merge(previous.kind, previous.bytes, bytes)
             {
                 let mut joined = Vec::with_capacity(previous.bytes.len() + bytes.len());
@@ -182,10 +183,10 @@ impl<'source> Emitter<'source> {
         if self.output.is_empty()
             && let Some(source) = self.source
             && source
-                .get(self.matched..)
+                .get(self.matched_bytes..)
                 .is_some_and(|remaining| remaining.starts_with(bytes))
         {
-            self.matched += bytes.len();
+            self.matched_bytes += bytes.len();
         } else {
             self.materialize();
             self.output.extend_from_slice(bytes);
@@ -200,14 +201,14 @@ impl<'source> Emitter<'source> {
         if self.output.is_empty()
             && let Some(source) = self.source
             && source
-                .get(self.matched..)
+                .get(self.matched_bytes..)
                 .and_then(|remaining| remaining.get(..count))
-                .is_some_and(|bytes| bytes.iter().all(|&candidate| candidate == byte))
+                .is_some_and(|bytes| bytes.iter().all(|candidate| *candidate == byte))
         {
-            self.matched += count;
+            self.matched_bytes += count;
         } else {
             self.materialize();
-            self.output.extend(std::iter::repeat_n(byte, count));
+            self.output.extend(iter::repeat_n(byte, count));
         }
     }
 
@@ -216,13 +217,19 @@ impl<'source> Emitter<'source> {
             && let Some(source) = self.source
         {
             self.output = Vec::with_capacity(source.len());
-            self.output.extend_from_slice(&source[..self.matched]);
+            self.output.extend_from_slice(&source[..self.matched_bytes]);
         }
     }
 }
 
+#[derive(Copy, Clone)]
+struct EmittedToken<'source> {
+    kind: TokenKind,
+    bytes: &'source [u8],
+}
+
 fn could_merge(kind: TokenKind, previous: &[u8], next: &[u8]) -> bool {
-    let Some((&last, &first)) = previous.last().zip(next.first()) else {
+    let Some((last, first)) = previous.last().copied().zip(next.first().copied()) else {
         return false;
     };
 
@@ -232,15 +239,17 @@ fn could_merge(kind: TokenKind, previous: &[u8], next: &[u8]) -> bool {
         _ => {}
     }
 
-    let name = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
-
-    (name(last) && name(first))
+    (is_name(last) && is_name(first))
         || (last.is_ascii_punctuation() && first.is_ascii_punctuation())
         || (last == b'.' && first.is_ascii_digit())
         || (last.is_ascii_digit() && first == b'.')
-        || (kind == TokenKind::Number && last == b'.' && name(first))
-        || (last == b'@' && name(first))
+        || (kind == TokenKind::Number && last == b'.' && is_name(first))
+        || (last == b'@' && is_name(first))
         || (matches!(last, b'e' | b'E') && matches!(first, b'+' | b'-'))
+}
+
+fn is_name(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
 fn keyword_bytes(keyword: Keyword) -> &'static [u8] {

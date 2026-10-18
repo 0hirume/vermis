@@ -15,4 +15,4 @@ pub mod token;
 /// Indexed syntax storage.
 pub mod tree;
 
-pub use parser::parse;
+pub use self::parser::parse;
