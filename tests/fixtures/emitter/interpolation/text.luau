@@ -1,0 +1,1 @@
+print(`prefix {value} suffix`, 0)

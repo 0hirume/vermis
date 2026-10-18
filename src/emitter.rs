@@ -226,6 +226,12 @@ fn could_merge(kind: TokenKind, previous: &[u8], next: &[u8]) -> bool {
         return false;
     };
 
+    match kind {
+        TokenKind::InterpolatedStringEnd => return false,
+        TokenKind::InterpolatedStringMiddle => return first == b'{',
+        _ => {}
+    }
+
     let name = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
 
     (name(last) && name(first))
