@@ -443,9 +443,9 @@ pub enum NodeKind {
         end: Option<TokenIndex>,
     },
 
-    /// Public class property.
+    /// Class property.
     Property {
-        /// `public` token.
+        /// Visibility modifier token.
         public: TokenIndex,
         /// Declared binding.
         binding: NodeIndex,

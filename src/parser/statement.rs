@@ -430,7 +430,7 @@ impl Parser<'_> {
     fn while_statement(&mut self) -> NodeIndex {
         let start = self.position();
         let keyword = self.take();
-        let condition = self.expression();
+        let condition = self.condition();
         let do_keyword = self.expect(TokenKind::Keyword(Keyword::Do), "expected do");
 
         self.loop_depth += 1;
@@ -1149,7 +1149,7 @@ impl Parser<'_> {
             None
         };
 
-        let public = if !external && self.named(b"public") {
+        let public = if !external && (self.named(b"public") || self.named(b"private")) {
             Some(self.take())
         } else {
             None
