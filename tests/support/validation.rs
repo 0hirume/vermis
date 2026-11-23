@@ -646,6 +646,7 @@ fn declarations(
         }
 
         NodeKind::Class {
+            prefix,
             open,
             keyword,
             name,
@@ -655,6 +656,7 @@ fn declarations(
             end,
             ..
         } => {
+            punctuation.extend(*prefix);
             punctuation.extend(*open);
             punctuation.extend(*keyword);
             children.push(*name);

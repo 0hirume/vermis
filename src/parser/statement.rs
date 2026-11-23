@@ -105,7 +105,7 @@ impl Parser<'_> {
         {
             self.export_statement(None)
         } else if self.named(b"class") && matches!(next, TokenKind::Name | TokenKind::EndOfFile) {
-            Ok(self.class_statement(false, None))
+            Ok(self.class_statement(false, None, None))
         } else if self.named(b"open") && matches!(next, TokenKind::Name | TokenKind::EndOfFile) {
             let open = Some(self.take());
 
@@ -113,7 +113,7 @@ impl Parser<'_> {
                 return Err(self.error("expected class after open"));
             }
 
-            Ok(self.class_statement(false, open))
+            Ok(self.class_statement(false, None, open))
         } else if self.named(b"continue") && !continues_expression(next) {
             let keyword = self.position();
 
@@ -146,6 +146,20 @@ impl Parser<'_> {
 
         if attributes.is_some() {
             self.diagnose(self.error("expected function after attributes"));
+        }
+
+        if self.named(b"class") && self.lookahead() == TokenKind::Name {
+            return Ok(self.class_statement(false, Some(keyword), None));
+        }
+
+        if self.named(b"open") {
+            let next = self.lookahead_token();
+
+            if next.kind == TokenKind::Name && next.bytes(self.source) == b"class" {
+                let open = self.take();
+
+                return Ok(self.class_statement(false, Some(keyword), Some(open)));
+            }
         }
 
         let bindings = self.bindings();
@@ -921,6 +935,17 @@ impl Parser<'_> {
             }
         }
 
+        if let NodeKind::Class {
+            prefix: Some(prefix),
+            ..
+        } = self.node(declaration).kind
+        {
+            self.diagnose(Diagnostic {
+                span: self.tokens[prefix.get()].span,
+                message: "exported classes must not have a local or const prefix",
+            });
+        }
+
         Ok(self.append_node(
             start,
             NodeKind::Export {
@@ -953,7 +978,7 @@ impl Parser<'_> {
                 return Err(self.error("expected extern type"));
             }
 
-            self.class_statement(true, None)
+            self.class_statement(true, None, None)
         } else if self.at(TokenKind::Keyword(Keyword::Function)) {
             let function_keyword = Some(self.take());
             let name = Some(self.name());
@@ -1023,8 +1048,13 @@ impl Parser<'_> {
         )
     }
 
-    fn class_statement(&mut self, external: bool, open: Option<TokenIndex>) -> NodeIndex {
-        let start = open.unwrap_or_else(|| self.position());
+    fn class_statement(
+        &mut self,
+        external: bool,
+        prefix: Option<TokenIndex>,
+        open: Option<TokenIndex>,
+    ) -> NodeIndex {
+        let start = prefix.or(open).unwrap_or_else(|| self.position());
         let keyword = Some(self.take());
         let name = self.name();
 
@@ -1125,6 +1155,7 @@ impl Parser<'_> {
         self.append_node(
             start,
             NodeKind::Class {
+                prefix,
                 open,
                 keyword,
                 name,

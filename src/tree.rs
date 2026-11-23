@@ -427,6 +427,8 @@ pub enum NodeKind {
 
     /// Class declaration.
     Class {
+        /// `local` or `const` token.
+        prefix: Option<TokenIndex>,
         /// `open` token.
         open: Option<TokenIndex>,
         /// Leading keyword token.

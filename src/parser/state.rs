@@ -59,13 +59,16 @@ impl<'source> Parser<'source> {
     /// Panics if the internal token stream lacks its end-of-input sentinel.
     #[must_use]
     pub fn lookahead(&self) -> TokenKind {
+        self.lookahead_token().kind
+    }
+
+    pub(super) fn lookahead_token(&self) -> Token {
         let start = self.cursor + usize::from(self.current().kind != TokenKind::EndOfFile);
 
-        self.tokens[start..]
+        *self.tokens[start..]
             .iter()
             .find(|token| !is_trivia(token.kind))
             .expect("token stream ends in end-of-file")
-            .kind
     }
 
     /// Tests the current token kind.

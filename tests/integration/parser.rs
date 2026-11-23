@@ -582,7 +582,6 @@ fn enabled_syntax() {
         include_bytes!("../fixtures/parser/enabled/variadic.luau").as_slice(),
         include_bytes!("../fixtures/parser/enabled/generic.luau").as_slice(),
         include_bytes!("../fixtures/parser/enabled/callback.luau").as_slice(),
-        include_bytes!("../fixtures/parser/enabled/integers.luau").as_slice(),
         include_bytes!("../fixtures/parser/enabled/instantiation.luau").as_slice(),
         include_bytes!("../fixtures/parser/enabled/method.luau").as_slice(),
     ] {
@@ -724,12 +723,6 @@ fn numeric_literals() {
         include_bytes!("../fixtures/parser/numbers/accepted/hexadecimals.luau").as_slice(),
         include_bytes!("../fixtures/parser/numbers/accepted/binary.luau").as_slice(),
         include_bytes!("../fixtures/parser/numbers/accepted/binaries.luau").as_slice(),
-        include_bytes!("../fixtures/parser/numbers/accepted/integer.luau").as_slice(),
-        include_bytes!("../fixtures/parser/numbers/accepted/integers.luau").as_slice(),
-        include_bytes!("../fixtures/parser/numbers/accepted/maximum.luau").as_slice(),
-        include_bytes!("../fixtures/parser/numbers/accepted/grouped.luau").as_slice(),
-        include_bytes!("../fixtures/parser/numbers/accepted/bits.luau").as_slice(),
-        include_bytes!("../fixtures/parser/numbers/accepted/groups.luau").as_slice(),
     ] {
         accepted(source);
     }
@@ -747,6 +740,13 @@ fn numeric_literals() {
         include_bytes!("../fixtures/parser/numbers/invalid/decimals.luau").as_slice(),
         include_bytes!("../fixtures/parser/numbers/invalid/integer.luau").as_slice(),
         include_bytes!("../fixtures/parser/numbers/invalid/integers.luau").as_slice(),
+        include_bytes!("../fixtures/parser/numbers/invalid/suffix.luau").as_slice(),
+        include_bytes!("../fixtures/parser/numbers/invalid/suffix/decimal.luau").as_slice(),
+        include_bytes!("../fixtures/parser/numbers/invalid/suffix/separated.luau").as_slice(),
+        include_bytes!("../fixtures/parser/numbers/invalid/suffix/maximum.luau").as_slice(),
+        include_bytes!("../fixtures/parser/numbers/invalid/suffix/grouped.luau").as_slice(),
+        include_bytes!("../fixtures/parser/numbers/invalid/suffix/bits.luau").as_slice(),
+        include_bytes!("../fixtures/parser/numbers/invalid/suffix/groups.luau").as_slice(),
     ] {
         let tree = check(source);
 

@@ -673,29 +673,20 @@ fn is_valid_number(bytes: &[u8]) -> bool {
         return false;
     };
 
-    let integer = text.ends_with('i');
-    let digits = text.strip_suffix('i').unwrap_or(text);
-
-    let radix = if digits.starts_with("0x") || digits.starts_with("0X") {
+    let radix = if text.starts_with("0x") || text.starts_with("0X") {
         16
-    } else if digits.starts_with("0b") || digits.starts_with("0B") {
+    } else if text.starts_with("0b") || text.starts_with("0B") {
         2
     } else {
         10
     };
 
     if radix != 10 {
-        let digits = &digits[2..];
+        let digits = &text[2..];
 
-        if integer {
-            u64::from_str_radix(digits, radix).is_ok()
-        } else {
-            !digits.is_empty() && digits.chars().all(|digit| digit.is_digit(radix))
-        }
-    } else if integer {
-        digits.parse::<i64>().is_ok()
+        !digits.is_empty() && digits.chars().all(|digit| digit.is_digit(radix))
     } else {
-        digits.parse::<f64>().is_ok()
+        text.parse::<f64>().is_ok()
     }
 }
 
